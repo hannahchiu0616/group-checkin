@@ -2,7 +2,6 @@
 // 每個群組一份自己的試算表（自動建立在擁有者的 Google 雲端硬碟），網站用 ?g=群組代碼 分開
 // 安裝／更新：Apps Script 貼上這整段 → 存檔 → 部署 → 管理部署作業 → 鉛筆 → 版本選「新版本」→ 部署（網址不變）
 // 第一次：上方函式選 setupMain → 執行（建立這個網站的主群組，你自己是管理員）
-//         再選 testMail → 執行（開寄信權限：管理員第一次登入、忘記密碼要寄驗證碼）
 
 const SITE = "https://hannahchiu0616.github.io/group-checkin/";
 const TABS = {
@@ -144,30 +143,7 @@ function auth(p, ownerOnly) {
 function canAdmin(g, email) {
   if (email === owner()) return true;
   if (g === "*") return false;
-  if (email === TEMP_EMAIL) { const t = tempRec(); if (!t || t.exp < Date.now()) return false; }   // 臨時帳號過期就不能用
   return rows(book(g), "管理員").some(r => normEmail(r[0]) === email);
-}
-function checkEmail(s) {
-  const email = normEmail(s);
-  if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw new Error("Email 格式不對");
-  return email;
-}
-// 密碼只存加鹽後的雜湊，試算表和後台都看不到原本的密碼
-function hashPw(pw, salt) {
-  const bytes = s => Utilities.newBlob(String(s)).getBytes(), key = bytes(salt);
-  let h = Utilities.computeHmacSha256Signature(bytes(pw), key);
-  for (let i = 0; i < 200; i++) h = Utilities.computeHmacSha256Signature(h, key);
-  return Utilities.base64Encode(h);
-}
-// 發登入通行碼（30 天；臨時帳號到期就失效）
-function issue(g, email, action) {
-  cleanTokens();
-  const token = Utilities.getUuid();
-  let exp = Date.now() + 30 * 864e5;
-  if (email === TEMP_EMAIL) exp = Math.min(exp, (tempRec() || {}).exp || 0);
-  props().setProperty("t_" + token, JSON.stringify({ g, email, exp }));
-  if (g !== "*") log(book(g), email, action, "");
-  return { token, email };
 }
 function cleanTokens() {
   const all = props().getProperties();
@@ -198,41 +174,33 @@ const ACTIONS = {
     return {};
   },
 
-  // 登入：Email ＋ 密碼。連續錯 5 次鎖 15 分鐘
+  // 登入：Email 在管理員名單上就直接登入（不寄驗證碼）
   login(p) {
-    const email = checkEmail(p.email), g = p.admin ? "*" : p.g;
-    const fk = "fail:" + email, fails = Number(cache().get(fk) || 0);
-    if (fails >= 5) throw new Error("密碼錯太多次，請 15 分鐘後再試，或按「第一次登入／忘記密碼」重設");
-    const isAdmin = canAdmin(g, email), rec = JSON.parse(props().getProperty("pw_" + email) || "null");
-    if (isAdmin && !rec) throw new Error("這個 Email 還沒設定密碼，請按「第一次登入／忘記密碼」");
-    if (!isAdmin || hashPw(String(p.password || ""), rec.s) !== rec.h) {
-      cache().put(fk, String(fails + 1), 900);
-      throw new Error("Email 或密碼不對");
-    }
-    cache().remove(fk);
-    return issue(g, email, "登入");
+    const email = normEmail(p.email), g = p.admin ? "*" : p.g;
+    if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw new Error("Email 格式不對");
+    if (!canAdmin(g, email)) throw new Error("這個 Email 沒有管理權限");
+    cleanTokens();
+    const token = Utilities.getUuid();
+    props().setProperty("t_" + token, JSON.stringify({ g, email, exp: Date.now() + 30 * 864e5 }));
+    if (g !== "*") log(book(g), email, "登入", "");
+    return { token, email };
   },
 
-  // 第一次登入／忘記密碼：先寄驗證碼到信箱，收到後設定密碼
+  // （備用）寄驗證碼登入：要用的話網站改呼叫 requestCode / verifyCode
   requestCode(p) {
-    const email = checkEmail(p.email), g = p.admin ? "*" : p.g;
-    if (email === TEMP_EMAIL) throw new Error("臨時帳號不能設定密碼，請先用它登入，把你自己的 Email 加進管理員");
+    const email = normEmail(p.email), g = p.admin ? "*" : p.g;
+    if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw new Error("Email 格式不對");
     if (!canAdmin(g, email)) throw new Error("這個 Email 沒有管理權限");
-    if (cache().get("cd:" + email)) throw new Error("剛剛已經寄過了，請等 1 分鐘再寄");
-    cache().put("cd:" + email, "1", 60);
     const code = String(Math.floor(100000 + Math.random() * 900000));
     cache().put("code:" + g + ":" + email, code, 600);
-    cache().remove("code:" + g + ":" + email + ":tries");
     const title = g === "*" ? "打卡網站總管理" : (settingsOf(book(g))["名稱"] || "打卡網站");
-    MailApp.sendEmail(email, `${title} 設定密碼驗證碼：${code}`,
-      `你的驗證碼是 ${code}，10 分鐘內有效，用來設定管理登入的密碼。\n\n如果不是你本人操作，請忽略這封信，你的密碼不會被改。`);
+    MailApp.sendEmail(email, `${title} 管理驗證碼：${code}`,
+      `你的驗證碼是 ${code}，10 分鐘內有效。\n\n如果不是你本人操作，請忽略這封信。`);
     return {};
   },
-  setPassword(p) {
-    const email = checkEmail(p.email), g = p.admin ? "*" : p.g, pw = String(p.password || "");
-    if (pw.length < 8) throw new Error("密碼至少要 8 個字");
-    if (!canAdmin(g, email)) throw new Error("這個 Email 沒有管理權限");
-    const k = "code:" + g + ":" + email, c = cache().get(k);
+  verifyCode(p) {
+    const email = normEmail(p.email), g = p.admin ? "*" : p.g, k = "code:" + g + ":" + email;
+    const c = cache().get(k);
     if (!c) throw new Error("驗證碼已過期，請重新寄送");
     if (c !== String(p.code || "").trim()) {
       // 錯 5 次這組驗證碼就作廢，避免被亂猜
@@ -243,12 +211,11 @@ const ACTIONS = {
     }
     cache().remove(k);
     cache().remove(k + ":tries");
-    const s = Utilities.getUuid();
-    props().setProperty("pw_" + email, JSON.stringify({ s, h: hashPw(pw, s) }));
-    cache().remove("fail:" + email);
-    const r = issue(g, email, "設定密碼並登入");
-    if (g !== "*") removeTemp(g, email);   // 交接的人設好自己的密碼：臨時帳號自動失效
-    return r;
+    cleanTokens();
+    const token = Utilities.getUuid();
+    props().setProperty("t_" + token, JSON.stringify({ g, email, exp: Date.now() + 30 * 864e5 }));
+    if (g !== "*") log(book(g), email, "登入", "");
+    return { token, email };
   },
   logout(p) { if (p.token) props().deleteProperty("t_" + p.token); return {}; },
 
@@ -347,7 +314,7 @@ function setupMain() {
     "開始計算日": today(), "每次罰款": "50", "每月免死次數": "0", "免死從": "", "切換時間": "12:00",
     "免除名稱": "請假", "免除提前天數": "0", "保留月數": "12",
     "規則說明": "每天完成任務後在網站回報\n計算時間為當日中午 12 點至隔日中午 12 點\n隔天中午 12 點前沒回報視同沒做，每次罰 50 元",
-  }, [owner()]);
+  }, [owner(), EXTRA_ADMIN]);
   gs.main = { name, sheetId: ss.getId(), created: today() };
   saveGroups(gs);
   log(ss, owner(), "建立群組", name);
@@ -355,27 +322,13 @@ function setupMain() {
   Logger.log("資料試算表：" + ss.getUrl());
 }
 
-/* ---------- 交接用臨時管理帳號（在編輯器選 addTempAdmin 按「執行」） ----------
-   交接的人用這組帳號密碼登入 → 管理員加上自己的 Email → 登出 →「第一次登入／忘記密碼」設好自己的密碼
-   設好的那一刻臨時帳號自動刪掉；沒人用的話 7 天後也自動失效 */
-const TEMP_EMAIL = "123@gmail.com", TEMP_PW = "123", TEMP_DAYS = 7;
-function tempRec() { return JSON.parse(props().getProperty("pw_" + TEMP_EMAIL) || "null"); }
-function addTempAdmin() {
+/* ---------- 交接用管理員：在編輯器選 addExtraAdmin 按「執行」（setupMain 已經會自動加，之前執行過的才需要） ---------- */
+const EXTRA_ADMIN = "123@gmail.com";
+function addExtraAdmin() {
   const ss = book("main"), list = rows(ss, "管理員");
-  if (!list.some(r => normEmail(r[0]) === TEMP_EMAIL)) setRows(ss, "管理員", list.concat([[TEMP_EMAIL]]));
-  const s = Utilities.getUuid(), exp = Date.now() + TEMP_DAYS * 864e5;
-  props().setProperty("pw_" + TEMP_EMAIL, JSON.stringify({ s, h: hashPw(TEMP_PW, s), exp }));
-  cache().remove("fail:" + TEMP_EMAIL);
-  log(ss, owner(), "建立臨時管理帳號", `${TEMP_EMAIL}，${TEMP_DAYS} 天內有效`);
-  Logger.log(`完成！帳號 ${TEMP_EMAIL}　密碼 ${TEMP_PW}　有效到 ${Utilities.formatDate(new Date(exp), "Asia/Taipei", "yyyy/MM/dd HH:mm")}`);
-  Logger.log("登入網址：" + SITE + "#admin");
-}
-function removeTemp(g, byEmail) {
-  if (!tempRec()) return;
-  props().deleteProperty("pw_" + TEMP_EMAIL);
-  const ss = book(g), list = rows(ss, "管理員"), keep = list.filter(r => normEmail(r[0]) !== TEMP_EMAIL);
-  if (keep.length !== list.length) setRows(ss, "管理員", keep);
-  log(ss, byEmail, "刪除臨時管理帳號", `${byEmail} 已設定自己的密碼`);
+  if (!list.some(r => normEmail(r[0]) === EXTRA_ADMIN)) setRows(ss, "管理員", list.concat([[EXTRA_ADMIN]]));
+  log(ss, owner(), "修改管理員", "加上 " + EXTRA_ADMIN);
+  Logger.log("完成！" + EXTRA_ADMIN + " 可以登入：" + SITE + "#admin");
 }
 
 /* ---------- 開啟寄信權限：在編輯器選這個函式按「執行」，Google 會問寄信權限，按允許 ---------- */
