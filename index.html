@@ -464,8 +464,9 @@ function build(recs, s, item) {
     if (key(k) > firstDay) firstDay = key(k);
   }
   function status(m, day) {
-    if (day < firstDay) return "na";
-    if (!m.periods.some(p => (!p.from || day >= p.from) && (!p.to || day <= p.to))) return "na";
+    // 還沒開始計算（或還沒加入）的日子：本人請的假照樣標「免」，跟請假紀錄對得上；其他都不計算
+    if (day < firstDay || !m.periods.some(p => (!p.from || day >= p.from) && (!p.to || day <= p.to)))
+      return ex.some(e => e.name === m.name && day >= e.from && day <= e.to) ? "free" : "na";
     if (pauses.some(p => p.name === m.name && day >= p.from && (!p.back || day < p.back))) return "na";
     // 免除期間一律算免（有沒有回報都一樣），還沒到的日子也先標出來
     if (ex.some(e => (e.name === "全部" || e.name === m.name) && day >= e.from && day <= e.to)) return "free";
