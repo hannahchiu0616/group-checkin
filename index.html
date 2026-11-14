@@ -205,9 +205,10 @@ button.sm{padding:4px 9px;font-size:.85rem}
     </div>
     <div data-kind-panel="class" hidden>
       <div class="field row2">
-        <div><label for="classFrom" id="classFromLbl">第一天</label><input type="date" id="classFrom"></div>
-        <div><label for="classTo" id="classToLbl">最後一天</label><input type="date" id="classTo"></div>
+        <div><label for="classFrom" id="classFromLbl">從幾號</label><input type="date" id="classFrom"></div>
+        <div><label for="classTo" id="classToLbl">到幾號</label><input type="date" id="classTo"></div>
       </div>
+      <div class="field"><label for="classReason">原因（必填）</label><input id="classReason" maxlength="100" placeholder="例如：出差、生病、家裡有事" autocomplete="off"><p class="hint">原因只有管理員看得到。</p></div>
     </div>
     <p class="hint" id="reportHint"></p>
     <button type="submit" class="report-btn" id="reportBtn">已完成 ✅ 送出回報</button>
@@ -520,8 +521,8 @@ function renderStatic() {
   $("rulesList").innerHTML = rules.map(r => `<li>${esc(r)}</li>`).join("");
   $("kindClass").textContent = `${S.exName}回報`;
   $("kindClass").hidden = !S.exName;
-  $("classFromLbl").textContent = `${S.exName}第一天`;
-  $("classToLbl").textContent = `${S.exName}最後一天`;
+  $("classFromLbl").textContent = `${S.exName}從幾號`;
+  $("classToLbl").textContent = "到幾號";
   $("memberNames").innerHTML = MODEL.members.map(m => `<option value="${esc(m.name)}">`).join("");
   const free = SETTINGS.freePerMonth;
   $("legend").innerHTML = [
@@ -654,7 +655,7 @@ function updateReport() {
     $("classTo").min = a;
     $("reportHint").textContent = a
       ? `${md(addDays(a, -S.exBefore))} 到 ${md($("classTo").value)} 都不用做${S.task}`
-      : `填${S.exName}第一天和最後一天${S.exBefore ? `，前 ${S.exBefore} 天也會自動免` : ""}`;
+      : `填${S.exName}從幾號到幾號，並寫原因${S.exBefore ? `；前 ${S.exBefore} 天也會自動免` : ""}`;
     showReportList();
     return;
   }
@@ -702,8 +703,10 @@ $("reportForm").onsubmit = async e => {
   let body, done;
   if (reportKind === "class") {
     const from = $("classFrom").value, to = $("classTo").value || from;
-    if (!from || to < from) return reportMsg(`請填${S.exName}第一天和最後一天`, "err");
-    body = { type: "class", name, from, to };
+    const reason = $("classReason").value.trim();
+    if (!from || to < from) return reportMsg(`請填${S.exName}從幾號到幾號`, "err");
+    if (!reason) { $("classReason").focus(); return reportMsg("請寫原因", "err"); }
+    body = { type: "class", name, from, to, reason };
     done = `${md(from)}～${md(to)} ${S.exName}已登記，${md(addDays(from, -S.exBefore))}～${md(to)} 免做${S.task}`;
   } else {
     const date = nowDay();
@@ -717,6 +720,7 @@ $("reportForm").onsubmit = async e => {
     const r = await res.json();
     if (!r.ok) throw new Error(r.error || "送出失敗");
     reportMsg(`✅ 收到了！${esc(name)} ${done}`, "ok");
+    if (body.type === "class") $("classReason").value = "";
     load();
   } catch (err) {
     reportMsg(`送出失敗：${esc(err.message)}，請再試一次`, "err");
@@ -976,9 +980,10 @@ function secPauses() {
 }
 function secEx() {
   const n = SETTINGS.exName || "免除";
-  editor({ title: n, tab: "免除", rows: DATA["免除"], newRow: () => ["", "", ""], groupBy: r => normDate(r[1]).slice(0, 7), sortKey: r => normDate(r[1]) + normDate(r[2]), locked: true,
-    hint: `${n}期間不用做${esc(SETTINGS.task)}${SETTINGS.exBefore ? `（從第一天的前 ${SETTINGS.exBefore} 天開始）` : ""}。名字寫「全部」＝所有人。成員自己也可以在回報專區登記。`,
-    cols: [{ ...nameCol, ph: "名字或「全部」" }, { label: "第一天", type: "date" }, { label: "最後一天", type: "date" }] });
+  // 原因只有管理員看得到：用管理員資料裡的完整紀錄（公開資料沒有原因，用它存檔會把原因洗掉）
+  editor({ title: n, tab: "免除", rows: (ADMIN && ADMIN.ex) || DATA["免除"], newRow: () => ["", "", "", ""], groupBy: r => normDate(r[1]).slice(0, 7), sortKey: r => normDate(r[1]) + normDate(r[2]), locked: true,
+    hint: `${n}期間不用做${esc(SETTINGS.task)}${SETTINGS.exBefore ? `（從第一天的前 ${SETTINGS.exBefore} 天開始）` : ""}。名字寫「全部」＝所有人。成員自己也可以在回報專區登記。原因只有管理員看得到。`,
+    cols: [{ ...nameCol, ph: "名字或「全部」" }, { label: "從幾號", type: "date" }, { label: "到幾號", type: "date" }, { label: "原因", ph: "例如：出差" }] });
 }
 function secOverrides() {
   editor({ title: "手算調整", tab: "手算調整", rows: DATA["手算調整"], newRow: () => ["", nowDay().slice(0, 7), ""],

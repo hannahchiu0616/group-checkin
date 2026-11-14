@@ -9,7 +9,7 @@ const TABS = {
   "設定": ["項目", "值"],
   "成員": ["名字", "加入日期", "結束日期"],
   "回報": ["時間戳記", "姓名", "日期", "狀態"],
-  "免除": ["名字", "第一天", "最後一天"],
+  "免除": ["名字", "第一天", "最後一天", "原因"],   // 原因只有管理員看得到
   "退出休息": ["名字", "不計算開始日", "回歸日期", "原因"],
   "手算調整": ["名字", "月份", "金額"],
   "管理員": ["Email"],
@@ -45,6 +45,11 @@ function tab(ss, name) {
     sh.getRange(1, 1, sh.getMaxRows(), Math.min(sh.getMaxColumns(), 10)).setNumberFormat("@");
     sh.getRange(1, 1, 1, TABS[name].length).setValues([TABS[name]]).setFontWeight("bold");
     sh.setFrozenRows(1);
+  } else if (!cache().get("hdr:" + ss.getId() + name)) {
+    // 之後新增的欄位（例如請假原因）補上標題
+    const w = TABS[name].length;
+    if (!sh.getRange(1, w).getDisplayValue()) sh.getRange(1, 1, 1, w).setValues([TABS[name]]).setFontWeight("bold");
+    cache().put("hdr:" + ss.getId() + name, "1", 21600);
   }
   return sh;
 }
@@ -94,7 +99,7 @@ function doGet(e) {
     const g = String(e.parameter.g || "");
     const ss = book(g);
     const data = { ok: true, settings: settingsOf(ss) };
-    for (const t of PUBLIC_TABS) data[t] = rows(ss, t);
+    for (const t of PUBLIC_TABS) data[t] = t === "免除" ? rows(ss, t).map(r => r.slice(0, 3)) : rows(ss, t);   // 請假原因不公開
     return out(data);
   } catch (err) {
     return out({ ok: false, error: err.message || String(err) });
@@ -139,6 +144,7 @@ function auth(p, ownerOnly) {
 function canAdmin(g, email) {
   if (email === owner()) return true;
   if (g === "*") return false;
+  if (email === TEMP_EMAIL) { const t = tempRec(); if (!t || t.exp < Date.now()) return false; }   // 臨時帳號過期就不能用
   return rows(book(g), "管理員").some(r => normEmail(r[0]) === email);
 }
 function checkEmail(s) {
@@ -153,11 +159,13 @@ function hashPw(pw, salt) {
   for (let i = 0; i < 200; i++) h = Utilities.computeHmacSha256Signature(h, key);
   return Utilities.base64Encode(h);
 }
-// 發登入通行碼（30 天）
+// 發登入通行碼（30 天；臨時帳號到期就失效）
 function issue(g, email, action) {
   cleanTokens();
   const token = Utilities.getUuid();
-  props().setProperty("t_" + token, JSON.stringify({ g, email, exp: Date.now() + 30 * 864e5 }));
+  let exp = Date.now() + 30 * 864e5;
+  if (email === TEMP_EMAIL) exp = Math.min(exp, (tempRec() || {}).exp || 0);
+  props().setProperty("t_" + token, JSON.stringify({ g, email, exp }));
   if (g !== "*") log(book(g), email, action, "");
   return { token, email };
 }
@@ -180,11 +188,13 @@ const ACTIONS = {
     if (!cache().get("pruned:" + p.g)) { cache().put("pruned:" + p.g, "1", 86400); prune(ss); }
     return { ts };
   },
-  // 大堂課回報（大家都可以）
+  // 請假回報（大家都可以）：從幾號到幾號＋原因
   class(p) {
     const ss = book(p.g), name = cleanName(p.name), from = day(p.from), to = day(p.to);
+    const reason = String(p.reason || "").trim().replace(/[\t\n]/g, " ").slice(0, 100);
     if (!name || !from || !to || to < from) throw new Error("請確認日期");
-    append(ss, "免除", [[name, from, to]]);
+    if (!reason) throw new Error("請寫原因");
+    append(ss, "免除", [[name, from, to, reason]]);
     return {};
   },
 
@@ -206,6 +216,7 @@ const ACTIONS = {
   // 第一次登入／忘記密碼：先寄驗證碼到信箱，收到後設定密碼
   requestCode(p) {
     const email = checkEmail(p.email), g = p.admin ? "*" : p.g;
+    if (email === TEMP_EMAIL) throw new Error("臨時帳號不能設定密碼，請先用它登入，把你自己的 Email 加進管理員");
     if (!canAdmin(g, email)) throw new Error("這個 Email 沒有管理權限");
     if (cache().get("cd:" + email)) throw new Error("剛剛已經寄過了，請等 1 分鐘再寄");
     cache().put("cd:" + email, "1", 60);
@@ -235,14 +246,16 @@ const ACTIONS = {
     const s = Utilities.getUuid();
     props().setProperty("pw_" + email, JSON.stringify({ s, h: hashPw(pw, s) }));
     cache().remove("fail:" + email);
-    return issue(g, email, "設定密碼並登入");
+    const r = issue(g, email, "設定密碼並登入");
+    if (g !== "*") removeTemp(g, email);   // 交接的人設好自己的密碼：臨時帳號自動失效
+    return r;
   },
   logout(p) { if (p.token) props().deleteProperty("t_" + p.token); return {}; },
 
   // 管理頁需要的資料（管理員名單、修改紀錄）
   adminData(p) {
     const { ss, email } = auth(p);
-    return { email, admins: rows(ss, "管理員").map(r => r[0]), log: rows(ss, "修改紀錄").slice(-200).reverse() };
+    return { email, admins: rows(ss, "管理員").map(r => r[0]), log: rows(ss, "修改紀錄").slice(-200).reverse(), ex: rows(ss, "免除") };
   },
   saveSettings(p) {
     const { ss, email } = auth(p);
@@ -340,6 +353,29 @@ function setupMain() {
   log(ss, owner(), "建立群組", name);
   Logger.log("完成！網址：" + SITE);
   Logger.log("資料試算表：" + ss.getUrl());
+}
+
+/* ---------- 交接用臨時管理帳號（在編輯器選 addTempAdmin 按「執行」） ----------
+   交接的人用這組帳號密碼登入 → 管理員加上自己的 Email → 登出 →「第一次登入／忘記密碼」設好自己的密碼
+   設好的那一刻臨時帳號自動刪掉；沒人用的話 7 天後也自動失效 */
+const TEMP_EMAIL = "123@gmail.com", TEMP_PW = "123", TEMP_DAYS = 7;
+function tempRec() { return JSON.parse(props().getProperty("pw_" + TEMP_EMAIL) || "null"); }
+function addTempAdmin() {
+  const ss = book("main"), list = rows(ss, "管理員");
+  if (!list.some(r => normEmail(r[0]) === TEMP_EMAIL)) setRows(ss, "管理員", list.concat([[TEMP_EMAIL]]));
+  const s = Utilities.getUuid(), exp = Date.now() + TEMP_DAYS * 864e5;
+  props().setProperty("pw_" + TEMP_EMAIL, JSON.stringify({ s, h: hashPw(TEMP_PW, s), exp }));
+  cache().remove("fail:" + TEMP_EMAIL);
+  log(ss, owner(), "建立臨時管理帳號", `${TEMP_EMAIL}，${TEMP_DAYS} 天內有效`);
+  Logger.log(`完成！帳號 ${TEMP_EMAIL}　密碼 ${TEMP_PW}　有效到 ${Utilities.formatDate(new Date(exp), "Asia/Taipei", "yyyy/MM/dd HH:mm")}`);
+  Logger.log("登入網址：" + SITE + "#admin");
+}
+function removeTemp(g, byEmail) {
+  if (!tempRec()) return;
+  props().deleteProperty("pw_" + TEMP_EMAIL);
+  const ss = book(g), list = rows(ss, "管理員"), keep = list.filter(r => normEmail(r[0]) !== TEMP_EMAIL);
+  if (keep.length !== list.length) setRows(ss, "管理員", keep);
+  log(ss, byEmail, "刪除臨時管理帳號", `${byEmail} 已設定自己的密碼`);
 }
 
 /* ---------- 開啟寄信權限：在編輯器選這個函式按「執行」，Google 會問寄信權限，按允許 ---------- */
