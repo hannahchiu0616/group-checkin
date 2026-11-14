@@ -96,6 +96,10 @@ a{color:var(--accent)}
 .rlist li{padding:8px 0;border-top:1px solid var(--line)}
 .rlist li:first-child{border-top:0}
 .rlist b{display:block}
+.itemsel{display:flex;gap:6px;flex-wrap:wrap}
+.itemsel button{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-weight:600}
+.itemsel button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.mine-item{font-size:.8rem;font-weight:600;margin:10px 0 0}
 .mine{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .mine span{text-align:center;font-size:.75rem;color:var(--muted)}
 .msg{margin:10px 0 0}
@@ -183,6 +187,7 @@ button.sm{padding:4px 9px;font-size:.85rem}
   <div class="card toolbar">
     <label for="month">月份</label>
     <select id="month"></select>
+    <span class="itemsel" id="itemChips" hidden></span>
   </div>
 
   <nav class="tabs" role="tablist">
@@ -202,6 +207,12 @@ button.sm{padding:4px 9px;font-size:.85rem}
       <span class="lbl">名字</span>
       <div class="names" id="nameButtons"></div>
       <input id="reportNew" placeholder="輸入你的名字" maxlength="20" hidden>
+    </div>
+    <div data-kind-panel="daily">
+      <div class="field" id="itemField" hidden>
+        <span class="lbl">完成了哪幾項（可以複選）</span>
+        <div class="names" id="itemButtons"></div>
+      </div>
     </div>
     <div data-kind-panel="class" hidden>
       <div class="field row2">
@@ -309,6 +320,7 @@ const store = {
 };
 
 let DATA = null, SETTINGS = {}, MODEL = null, ROWS = [];
+let MODELS = {}, ITEM = "", pickedItems = [];   // 每個打卡項目一個計算模型；ITEM＝目前看哪一項；pickedItems＝回報時勾的項目
 
 /* ---------- 每天的切換時間（預設中午 12:00） ---------- */
 function cutMs() {
@@ -359,6 +371,8 @@ function readSettings(d) {
     startDate: s["開始計算日"] || "", fine: int(s["每次罰款"], 0), freePerMonth: int(s["每月免死次數"], 0), freeFrom: s["免死從"] || "",
     cutoff: s["切換時間"] || "12:00", exName: (s["免除名稱"] || "").trim(), exBefore: int(s["免除提前天數"], 0), rules: s["規則說明"] || "",
     keepMonths: int(s["保留月數"], 0),
+    // 打卡項目：任務名稱用「、」隔開就是好幾項，每項分開算、分開罰
+    items: (s["任務名稱"] || "任務").split(/[、,，\/]+/).map(x => x.trim()).filter(Boolean),
     members: lines(d["成員"]), exemptions: lines(d["免除"]), pauses: lines(d["退出休息"]), overrides: lines(d["手算調整"]),
   };
 }
@@ -379,27 +393,32 @@ function toRecords(rows) {
       day = claimed;
       late = !/補登/.test(r[3] || "") && ts.getTime() > deadlineOf(day);   // 管理員補登的不算遲交
     }
-    recs.push({ name, day, late, dated: !!claimed, ts: ts.getTime() });
+    recs.push({ name, day, late, dated: !!claimed, ts: ts.getTime(), item: String(r[4] || "").trim() });
   }
   return recs;
 }
 
 /* ---------- 建立計算模型 ---------- */
-function build(recs, s) {
+// item：只算這個打卡項目的回報（只有一個項目時全部都算；沒寫項目的舊回報算第一項）
+function build(recs, s, item) {
   const current = nowDay();                // 目前還在進行中的那一天
   const start = normDate(s.startDate);
+  const multi = s.items.length > 1;
+  const itemOf = r => (multi && s.items.includes(r.item)) ? r.item : s.items[0];
 
-  // 同一人兩次送出相隔不到 1 小時 → 當成不小心送了兩次（只看舊表單的紀錄；網站回報有自己的日期）
+  // 同一人同一項兩次送出相隔不到 1 小時 → 當成不小心送了兩次（只看舊表單的紀錄；網站回報有自己的日期）
   const lastTs = {};
   recs = recs.slice().sort((a, b) => a.ts - b.ts).filter(r => {
-    const dup = !r.dated && lastTs[r.name] && r.ts - lastTs[r.name] < 3600e3;
-    lastTs[r.name] = r.ts;
+    const k = r.name + "|" + itemOf(r);
+    const dup = !r.dated && lastTs[k] && r.ts - lastTs[k] < 3600e3;
+    lastTs[k] = r.ts;
     return !dup;
   });
   const byName = {};
   for (const r of recs) {
     const p = byName[r.name] ||= { days: {}, first: r.day };
-    if (r.day < p.first) p.first = r.day;
+    if (r.day < p.first) p.first = r.day;   // 第一次回報（任何項目都算）
+    if (item && itemOf(r) !== item) continue;
     const prev = p.days[r.day];
     if (!prev || (prev === "late" && !r.late)) p.days[r.day] = r.late ? "late" : "ok";
   }
@@ -478,13 +497,14 @@ function monthDays(ym) {
 }
 
 // 依日期順序計算，每月前 N 次缺交（含遲交）用免死次數抵掉；開始計算日之前不計罰款
-function monthDetail(m, ym) {
+// 好幾個打卡項目時：每項各自算（免死次數也是每項各自用），手算調整蓋掉的是全部項目的合計
+function monthDetail(m, ym, model = MODEL, noOverride = false) {
   const ff = normMonth(SETTINGS.freeFrom);
   const free = ff && ym < ff ? 0 : Math.max(0, SETTINGS.freePerMonth);
   const start = normDate(SETTINGS.startDate);
   const t = { ok: 0, miss: 0, late: 0, free: 0, cov: 0, nodata: 0, billed: 0, cells: [], limit: free };
   for (const d of monthDays(ym)) {
-    const st = MODEL.status(m, d);
+    const st = model.status(m, d);
     const billable = !start || d >= start;
     if (billable && (st === "miss" || st === "late") && t.cov < free) { t.cov++; t.cells.push({ d, st: "cov", was: st }); continue; }
     if (st in t) t[st]++;
@@ -492,8 +512,23 @@ function monthDetail(m, ym) {
     t.cells.push({ d, st });
   }
   t.owe = t.billed * SETTINGS.fine;
+  t.missAll = t.miss + t.cells.filter(c => c.was === "miss").length;
+  t.lateAll = t.late + t.cells.filter(c => c.was === "late").length;
+  if (!noOverride) applyOverride(t, m, ym);
+  return t;
+}
+function applyOverride(t, m, ym) {
   const ov = parseLines(SETTINGS.overrides).find(([n, mo]) => n === m.name && normMonth(mo) === ym);
   if (ov) { t.owe = +String(ov[2]).replace(/[^\d.-]/g, "") || 0; t.manual = true; }
+}
+// 全部項目加起來（本月結算用）：per＝每一項的明細
+function monthAll(m, ym) {
+  const per = {};
+  for (const it of SETTINGS.items) per[it] = monthDetail(m, ym, MODELS[it], true);
+  const L = Object.values(per), sum = k => L.reduce((a, t) => a + t[k], 0);
+  const t = { per, ok: sum("ok"), missAll: sum("missAll"), lateAll: sum("lateAll"), cov: sum("cov"), limit: sum("limit"),
+    free: per[SETTINGS.items[0]].free, owe: sum("owe"), cells: L.flatMap(x => x.cells) };
+  applyOverride(t, m, ym);
   return t;
 }
 
@@ -515,20 +550,37 @@ function renderStatic() {
   $("legend").innerHTML = [
     ["ok", "✓", "已回報"],
     free ? ["cov", "抵", "缺交，用每月免死次數抵掉"] : null,
-    ["miss", "✗", `缺交（罰 ${S.fine} 元）`],
+    ["miss", "✗", `缺交（${S.items.length > 1 ? "每項" : ""}罰 ${S.fine} 元）`],
     ["late", "遲", `超過隔日${cutLabel()}（視同沒做）`],
     S.exName ? ["free", "免", `${S.exName}免除`] : null,
     ["now", "…", "還在計算區間內"],
     ["nodata", "?", "沒有資料"],
     ["na", "·", "不計算"],
   ].filter(Boolean).map(([c, s, t]) => `<span><i class="c ${c}">${s}</i>${t}</span>`).join("");
+  // 好幾個打卡項目：月份旁邊切換要看哪一項的紀錄
+  $("itemChips").hidden = S.items.length < 2;
+  $("itemChips").innerHTML = S.items.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${it === ITEM}">${esc(it)}</button>`).join("");
+  $("itemField").hidden = S.items.length < 2;
+  pickedItems = pickedItems.filter(it => S.items.includes(it));
+  $("itemButtons").innerHTML = S.items.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${pickedItems.includes(it)}">${esc(it)}</button>`).join("");
 }
+$("itemChips").onclick = e => {
+  const b = e.target.closest("[data-item]");
+  if (!b) return;
+  ITEM = b.dataset.item; MODEL = MODELS[ITEM];
+  $("itemChips").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  render();
+  if (!$("adminPanel").hidden && adminSec === "reports") showSection("reports");
+};
 
 function render() {
   const ym = $("month").value || MODEL.months[MODEL.months.length - 1];
   const days = monthDays(ym), S = SETTINGS;
   // 退出的人：退出那個月還顯示，下個月起拿掉；整個月都不計算又沒有金額的人不顯示；順序照成員名單
-  ROWS = MODEL.members.filter(m => !MODEL.exitedBefore(m, ym + "-01")).map(m => ({ m, t: monthDetail(m, ym) }))
+  // t：全部項目合計（本月結算）；g：目前選的項目（回報紀錄表格）
+  const multi = S.items.length > 1;
+  ROWS = MODEL.members.filter(m => !MODEL.exitedBefore(m, ym + "-01"))
+    .map(m => { const t = multi ? monthAll(m, ym) : monthDetail(m, ym); return { m, t, g: multi ? t.per[ITEM] : t }; })
     .filter(r => r.t.owe || r.t.cells.some(c => c.st !== "na"));
 
   const start = normDate(S.startDate);
@@ -539,7 +591,7 @@ function render() {
   document.querySelectorAll(".month-note").forEach(el => { el.innerHTML = note; el.hidden = !note; });
 
   const sum = ROWS.reduce((a, r) => a + r.t.owe, 0);
-  const perfect = ROWS.filter(r => r.t.miss + r.t.late + r.t.cov === 0).length;
+  const perfect = ROWS.filter(r => r.t.missAll + r.t.lateAll === 0).length;
   $("stats").innerHTML = [
     [`本月${S.fineName}合計`, `$${sum.toLocaleString()}`, true],
     ["本月全勤人數", `${perfect} / ${ROWS.length}`],
@@ -547,11 +599,16 @@ function render() {
   ].map(([k, v, money]) => `<div class="stat"><div class="k">${k}</div><div class="v ${money ? "money" : ""}">${v}</div></div>`).join("");
 
   const free = S.freePerMonth;
+  if (multi) {
+    // 好幾個項目：每項一欄「沒做」次數（缺交＋遲交），最後是全部項目加起來的金額
+    $("summaryTable").innerHTML = `<tr><th>成員</th>${S.items.map(it => `<th class="num">${esc(it)}沒做</th>`).join("")}${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}天數</th>` : ""}<th class="num">本月${esc(S.fineName)}</th></tr>` +
+      ROWS.map(({ m, t }) => `<tr><td>${esc(m.name)}</td>${S.items.map(it => `<td class="num">${t.per[it].missAll + t.per[it].lateAll}</td>`).join("")}
+      ${free ? `<td class="num">${t.cov} / ${t.limit}</td>` : ""}${S.exName ? `<td class="num">${t.free}</td>` : ""}
+      <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}${t.manual ? "（手算）" : ""}</td></tr>`).join("");
+  } else
   $("summaryTable").innerHTML = `<tr><th>成員</th><th class="num">已回報</th><th class="num">缺交</th><th class="num">遲交</th>${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}</th>` : ""}<th class="num">本月${esc(S.fineName)}</th></tr>` +
     ROWS.map(({ m, t }) => {
-      const missAll = t.miss + t.cells.filter(c => c.was === "miss").length;
-      const lateAll = t.late + t.cells.filter(c => c.was === "late").length;
-      return `<tr><td>${esc(m.name)}</td><td class="num">${t.ok}</td><td class="num">${missAll}</td><td class="num">${lateAll}</td>
+      return `<tr><td>${esc(m.name)}</td><td class="num">${t.ok}</td><td class="num">${t.missAll}</td><td class="num">${t.lateAll}</td>
       ${free ? `<td class="num">${t.limit ? `${t.cov} / ${t.limit}` : "—"}</td>` : ""}${S.exName ? `<td class="num">${t.free}</td>` : ""}
       <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}</td></tr>`;
     }).join("");
@@ -559,7 +616,7 @@ function render() {
   const sym = { ok: "✓", miss: "✗", late: "遲", cov: "抵", free: "免", now: "…", na: "·", nodata: "?" };
   const tip = { ok: "已回報", miss: "缺交", late: "遲交", cov: "用免死次數抵掉", free: `${S.exName}免除`, now: "計算中", na: "不計算", nodata: "沒有資料" };
   $("grid").innerHTML = `<tr><th class="name">成員</th>${days.map(d => `<th>${+d.slice(8)}<br><small>${wkOf(d)}</small></th>`).join("")}</tr>` +
-    ROWS.map(({ m, t }) => `<tr><td class="name">${esc(m.name)}</td>${t.cells.map(c =>
+    ROWS.map(({ m, g }) => `<tr><td class="name">${esc(m.name)}</td>${g.cells.map(c =>
       `<td><i class="c ${c.st}" title="${md(c.d)} ${tip[c.st]}${c.was === "late" ? "（遲交）" : ""}">${sym[c.st]}</i></td>`).join("")}</tr>`).join("");
 }
 
@@ -573,7 +630,11 @@ async function load() {
     if (!d.ok) throw new Error(d.error || "讀不到資料");
     DATA = d;
     SETTINGS = readSettings(d);
-    MODEL = build(toRecords(d["回報"] || []), SETTINGS);
+    const recs = toRecords(d["回報"] || []);
+    MODELS = {};
+    for (const it of SETTINGS.items) MODELS[it] = build(recs, SETTINGS, SETTINGS.items.length > 1 ? it : "");
+    if (!SETTINGS.items.includes(ITEM)) ITEM = SETTINGS.items[0];
+    MODEL = MODELS[ITEM];
   } catch (e) {
     $("banner").innerHTML = `<div class="banner err">${esc(e.message || "讀不到資料，請檢查網路")}</div>`;
     return false;
@@ -649,10 +710,23 @@ function updateReport() {
   $("reportList").hidden = true;
   const d = nowDay();
   let hint = `這次回報算 ${md(d)}（${wkOf(d)}）的${S.task}，${md(addDays(d, 1))} ${cutLabel()} 前回報`;
-  if (n && MODEL?.byName[n]?.days[d] === "ok") hint = `${n} 已經回報過 ${md(d)}（${wkOf(d)}）了 ✓`;
+  if ((S.items || []).length > 1) {   // 網頁剛打開、資料還沒讀到時 S.items 還沒有
+    // 好幾個項目：列出今天每一項回報了沒
+    const done = it => n && MODELS[it]?.byName[n]?.days[d] === "ok";
+    hint = `這次回報算 ${md(d)}（${wkOf(d)}），${md(addDays(d, 1))} ${cutLabel()} 前回報` +
+      (n ? `。${n} 今天：${S.items.map(it => `${it}${done(it) ? " ✓" : " 還沒回報"}`).join("、")}` : "");
+  } else if (n && MODEL?.byName[n]?.days[d] === "ok") hint = `${n} 已經回報過 ${md(d)}（${wkOf(d)}）了 ✓`;
   $("reportHint").textContent = hint;
   showMine(n);
 }
+$("itemButtons").onclick = e => {
+  const b = e.target.closest("[data-item]");
+  if (!b) return;
+  const it = b.dataset.item;
+  pickedItems = pickedItems.includes(it) ? pickedItems.filter(x => x !== it) : pickedItems.concat(it);
+  b.setAttribute("aria-pressed", pickedItems.includes(it));
+  reportMsg("");
+};
 
 // 自己最近 7 天的真實狀況（不顯示免死次數抵掉的「抵」）
 function showMine(n) {
@@ -660,8 +734,11 @@ function showMine(n) {
   if (!m) { $("reportMine").innerHTML = ""; return; }
   const sym = { ok: "✓", miss: "✗", late: "遲", free: "免", now: "…", na: "·", nodata: "?" };
   const days = Array.from({ length: 7 }, (_, i) => addDays(MODEL.current, i - 6));
-  $("reportMine").innerHTML = `<p class="hint" style="margin-top:16px">${esc(n)} 最近 7 天</p><div class="mine">` +
-    days.map(d => { const st = MODEL.status(m, d); return `<span><i class="c ${st}">${sym[st] || ""}</i><br>${md(d)}</span>`; }).join("") + "</div>";
+  const strip = mo => `<div class="mine">` +
+    days.map(d => { const st = mo.status(m, d); return `<span><i class="c ${st}">${sym[st] || ""}</i><br>${md(d)}</span>`; }).join("") + "</div>";
+  const S = SETTINGS;
+  $("reportMine").innerHTML = `<p class="hint" style="margin-top:16px">${esc(n)} 最近 7 天</p>` +
+    (S.items.length > 1 ? S.items.map(it => `<p class="mine-item">${esc(it)}</p>${strip(MODELS[it])}`).join("") : strip(MODEL));
 }
 
 // 這個月所有人的免除紀錄
@@ -697,8 +774,15 @@ $("reportForm").onsubmit = async e => {
     done = `${md(from)}～${md(to)} ${S.exName}已登記，${md(addDays(from, -S.exBefore))}～${md(to)} 免做${S.task}`;
   } else {
     const date = nowDay();
-    body = { name, date };
-    done = `${md(date)}（${wkOf(date)}）已完成`;
+    if (S.items.length > 1) {
+      if (!pickedItems.length) return reportMsg("請選完成了哪幾項", "err");
+      const items = S.items.filter(it => pickedItems.includes(it));   // 照設定的順序
+      body = { name, date, items };
+      done = `${md(date)}（${wkOf(date)}）${items.join("、")} 已完成`;
+    } else {
+      body = { name, date };
+      done = `${md(date)}（${wkOf(date)}）已完成`;
+    }
   }
   $("reportBtn").disabled = true;
   reportMsg("送出中…");
@@ -708,6 +792,7 @@ $("reportForm").onsubmit = async e => {
     if (!r.ok) throw new Error(r.error || "送出失敗");
     reportMsg(`✅ 收到了！${esc(name)} ${done}`, "ok");
     if (body.type === "class") $("classReason").value = "";
+    if (body.items) { pickedItems = []; $("itemButtons").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", "false")); }
     load();
   } catch (err) {
     reportMsg(`送出失敗：${esc(err.message)}，請再試一次`, "err");
@@ -820,13 +905,13 @@ function secSettings() {
     ["網站", [
       ["名稱", "網站名稱", "text", ""],
       ["副標題", "副標題", "text", "顯示在網站名稱下面"],
-      ["任務名稱", "每天要做的事", "text", "例如：觀心書"],
+      ["任務名稱", "每天要做的事", "text", "例如：觀心書；好幾項用「、」隔開，例如：打拳、觀心書（每項分開算、分開罰）"],
       ["罰款名稱", "罰款叫什麼", "text", "例如：功德金"],
     ]],
     ["計算規則", [
       ["開始計算日", "開始計算日", "date", "這天以前只顯示回報，不計罰款"],
       ["切換時間", "每天的切換時間", "time", "例如中午 12:00：中午前回報算前一天"],
-      ["每次罰款", "每次缺交罰多少元", "number", ""],
+      ["每次罰款", "每次缺交罰多少元", "number", "好幾個項目時是每項各罰這個金額"],
       ["每月免死次數", "每人每月免死次數", "number", "0＝沒有免死"],
       ["免死從", "免死次數從哪個月開始", "month", "空白＝一開始就有"],
     ]],
@@ -959,8 +1044,10 @@ function secLog() {
 let admPick = "";
 function secReports() {
   const ym = $("month").value, names = MODEL.members.map(m => m.name);
-  $("adminSec").innerHTML = `<h2>每個人的打卡紀錄（${ym.replace("-", " 年 ")} 月）</h2>
-    <p class="hint" style="margin-bottom:10px">選一個人看他每一天的狀況。打錯的回報可以刪除，缺交的日子可以補登（補登不算遲交）。要看別的月份，改上面的「月份」。</p>
+  const multi = SETTINGS.items.length > 1;
+  const itemOk = r => !multi || (SETTINGS.items.includes(String(r[4] || "").trim()) ? String(r[4]).trim() : SETTINGS.items[0]) === ITEM;
+  $("adminSec").innerHTML = `<h2>每個人的打卡紀錄（${ym.replace("-", " 年 ")} 月${multi ? `・${esc(ITEM)}` : ""}）</h2>
+    <p class="hint" style="margin-bottom:10px">選一個人看他每一天的狀況。打錯的回報可以刪除，缺交的日子可以補登（補登不算遲交）。要看別的月份，改上面的「月份」${multi ? "；要看別的項目，按上面的項目" : ""}。</p>
     <div class="names" id="admNames">${names.map(n => `<button type="button" data-name="${esc(n)}" aria-pressed="${n === admPick}">${esc(n)}</button>`).join("")}</div>
     <div id="admList" style="margin-top:14px"></div>
     <p class="hint msg" id="secMsg"></p>`;
@@ -969,11 +1056,11 @@ function secReports() {
   const listFor = n => {
     const m = MODEL.members.find(x => x.name === n);
     if (!m) { $("admList").innerHTML = ""; return; }
-    const t = monthDetail(m, ym);
-    // 這個人這個月的每一筆回報，依「算哪一天」分好
+    const t = monthDetail(m, ym, MODEL, multi);
+    // 這個人這個月的每一筆回報（目前選的項目），依「算哪一天」分好
     const byDay = {};
     for (const r of DATA["回報"] || []) {
-      if (String(r[1]).replace(/\s*[（(].*$/, "").trim() !== n) continue;
+      if (String(r[1]).replace(/\s*[（(].*$/, "").trim() !== n || !itemOk(r)) continue;
       const ts = parseDateTime(r[0]);
       const day = normDate(r[2]) || (ts ? dayOf(ts.getTime()) : "");
       if (day.slice(0, 7) === ym) (byDay[day] ||= []).push(r);
@@ -983,14 +1070,14 @@ function secReports() {
     const cells = t.cells.filter(c => c.d <= MODEL.current || byDay[c.d] || c.st === "free").slice().reverse();
     $("admList").innerHTML = `<div class="stats" style="margin-bottom:12px">${[
         ["已回報", t.ok], ["缺交", missAll], ["遲交", lateAll], ["用免死抵掉", t.limit ? `${t.cov} / ${t.limit}` : "—"],
-        S.exName ? [S.exName, t.free] : null, [`本月${S.fineName}`, `$${t.owe}${t.manual ? "（手算）" : ""}`],
+        S.exName ? [S.exName, t.free] : null, [`本月${S.fineName}${multi ? `（${ITEM}）` : ""}`, `$${t.owe}${t.manual ? "（手算）" : ""}`],
       ].filter(Boolean).map(([k, v]) => `<div class="stat"><div class="k">${esc(k)}</div><div class="v" style="font-size:1.1rem">${v}</div></div>`).join("")}</div>
       <div class="scroll"><table class="edit"><tr><th>日期</th><th>狀態</th><th>送出時間</th><th></th></tr>${cells.map(c => {
         const st = c.st === "cov" ? c.was : c.st;
         const recs = byDay[c.d] || [];
         const status = `<i class="c ${c.st}">${{ ok: "✓", miss: "✗", late: "遲", cov: "抵", free: "免", now: "…", na: "·", nodata: "?" }[c.st]}</i> ${esc(label[st] || "")}${c.st === "cov" ? "（用免死抵掉）" : ""}`;
         const times = recs.length ? recs.map(r => `<div>${esc(r[0])}${r[3] && r[3] !== "已完成" ? `（${esc(r[3])}）` : ""}${r[1] !== n ? `（${esc(r[1])}）` : ""}
-          <button type="button" class="ghost sm" data-del='${esc(JSON.stringify([r[0], r[1], r[2]]))}'>刪除</button></div>`).join("") : `<span class="hint">—</span>`;
+          <button type="button" class="ghost sm" data-del='${esc(JSON.stringify([r[0], r[1], r[2], r[4] || ""]))}'>刪除</button></div>`).join("") : `<span class="hint">—</span>`;
         const canAdd = ["miss", "late", "cov", "nodata"].includes(c.st);   // 缺交、遲交的日子可以補登
         return `<tr><td>${md(c.d)}（${wkOf(c.d)}）</td><td>${status}</td><td style="white-space:normal">${times}</td>
           <td>${canAdd ? `<button type="button" class="ghost sm" data-add="${c.d}">補登</button>` : ""}</td></tr>`;
@@ -1008,13 +1095,13 @@ function secReports() {
   $("admList").onclick = e => {
     const del = e.target.closest("[data-del]"), add = e.target.closest("[data-add]");
     if (del) {
-      const [ts, name, date] = JSON.parse(del.dataset.del);
-      if (!confirm(`確定刪除 ${name} ${ts} 這筆回報？`)) return;
-      saving(() => api({ action: "deleteReport", ts, name, date }), "已刪除");
+      const [ts, name, date, item] = JSON.parse(del.dataset.del);
+      if (!confirm(`確定刪除 ${name} ${ts}${item ? ` ${item}` : ""} 這筆回報？`)) return;
+      saving(() => api({ action: "deleteReport", ts, name, date, item }), "已刪除");
     } else if (add) {
-      const date = add.dataset.add;
-      if (!confirm(`幫 ${admPick} 補登 ${md(date)}（${wkOf(date)}）？`)) return;
-      saving(() => api({ action: "addReport", name: admPick, date }), `已補登 ${admPick} ${md(date)}`);
+      const date = add.dataset.add, item = multi ? ITEM : "";
+      if (!confirm(`幫 ${admPick} 補登 ${md(date)}（${wkOf(date)}）${item}？`)) return;
+      saving(() => api({ action: "addReport", name: admPick, date, item }), `已補登 ${admPick} ${md(date)} ${item}`);
     }
   };
 }

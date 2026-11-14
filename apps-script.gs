@@ -7,7 +7,7 @@ const SITE = "https://hannahchiu0616.github.io/group-checkin/";
 const TABS = {
   "設定": ["項目", "值"],
   "成員": ["名字", "加入日期", "結束日期"],
-  "回報": ["時間戳記", "姓名", "日期", "狀態"],
+  "回報": ["時間戳記", "姓名", "日期", "狀態", "項目"],   // 項目：任務名稱有好幾項（用「、」隔開）時，回報的是哪一項
   "免除": ["名字", "第一天", "最後一天", "原因"],   // 原因只有管理員看得到
   "退出休息": ["名字", "不計算開始日", "回歸日期", "原因"],
   "手算調整": ["名字", "月份", "金額"],
@@ -88,6 +88,11 @@ function prune(ss) {
   return all.length - keep.length;
 }
 
+// 打卡項目：設定的「任務名稱」用「、」隔開就是好幾項
+function itemsOf(ss) {
+  return String(settingsOf(ss)["任務名稱"] || "任務").split(/[、,，\/]+/).map(x => x.trim()).filter(Boolean);
+}
+
 function ensureMember(ss, name, date) {
   if (!rows(ss, "成員").some(r => r[0] === name)) append(ss, "成員", [[name, date, ""]]);
 }
@@ -157,8 +162,11 @@ const ACTIONS = {
   report(p) {
     const ss = book(p.g), name = cleanName(p.name), date = day(p.date);
     if (!name || !date) throw new Error("名字或日期不完整");
-    const ts = now();
-    append(ss, "回報", [[ts, name, date, "已完成"]]);
+    const ts = now(), list = itemsOf(ss);
+    // 好幾個項目：勾了哪幾項就各存一筆
+    const picked = list.length > 1 ? list.filter(it => (p.items || []).indexOf(it) >= 0) : [""];
+    if (!picked.length) throw new Error("請選完成了哪幾項");
+    append(ss, "回報", picked.map(it => [ts, name, date, "已完成", it]));
     ensureMember(ss, name, date);
     // 每天第一次有人回報時，順便清掉超過保留月數的舊回報
     if (!cache().get("pruned:" + p.g)) { cache().put("pruned:" + p.g, "1", 86400); prune(ss); }
@@ -247,9 +255,9 @@ const ACTIONS = {
     const { ss, email } = auth(p);
     const sh = tab(ss, "回報"), vals = sh.getDataRange().getDisplayValues();
     for (let i = vals.length - 1; i >= 1; i--) {
-      if (vals[i][0] === p.ts && vals[i][1] === p.name && vals[i][2] === (p.date || "")) {
+      if (vals[i][0] === p.ts && vals[i][1] === p.name && vals[i][2] === (p.date || "") && String(vals[i][4] || "") === String(p.item || "")) {
         sh.deleteRow(i + 1);
-        log(ss, email, "刪除回報", `${p.name} ${p.date || p.ts}`);
+        log(ss, email, "刪除回報", `${p.name} ${p.date || p.ts}${p.item ? " " + p.item : ""}`);
         return {};
       }
     }
@@ -259,9 +267,11 @@ const ACTIONS = {
     const { ss, email } = auth(p);
     const name = cleanName(p.name), date = day(p.date);
     if (!name || !date) throw new Error("名字或日期不完整");
-    append(ss, "回報", [[now(), name, date, "補登"]]);
+    const list = itemsOf(ss), item = list.length > 1 ? String(p.item || "") : "";
+    if (list.length > 1 && list.indexOf(item) < 0) throw new Error("請選要補登哪一項");
+    append(ss, "回報", [[now(), name, date, "補登", item]]);
     ensureMember(ss, name, date);
-    log(ss, email, "補登回報", `${name} ${date}`);
+    log(ss, email, "補登回報", `${name} ${date}${item ? " " + item : ""}`);
     return {};
   },
 
@@ -310,10 +320,10 @@ function setupMain() {
   if (gs.main) throw new Error("主群組已經建立過了：" + SITE);
   const name = "新群組打卡";
   const ss = newBook(name, {
-    "名稱": name, "副標題": "每日回報狀況與罰款結算", "任務名稱": "任務", "罰款名稱": "罰款",
-    "開始計算日": today(), "每次罰款": "50", "每月免死次數": "0", "免死從": "", "切換時間": "12:00",
+    "名稱": name, "副標題": "打拳、觀心書每日回報與罰款結算", "任務名稱": "打拳、觀心書", "罰款名稱": "罰款",
+    "開始計算日": today(), "每次罰款": "100", "每月免死次數": "0", "免死從": "", "切換時間": "12:00",
     "免除名稱": "請假", "免除提前天數": "0", "保留月數": "12",
-    "規則說明": "每天完成任務後在網站回報\n計算時間為當日中午 12 點至隔日中午 12 點\n隔天中午 12 點前沒回報視同沒做，每次罰 50 元",
+    "規則說明": "每天要打拳、寫觀心書，做完在網站回報（兩項分開打卡）\n計算時間為當日中午 12 點至隔日中午 12 點\n隔天中午 12 點前沒回報視同沒做，每項沒做罰 100 元\n請假要寫從幾號到幾號和原因，請假期間不用做",
   }, [owner(), EXTRA_ADMIN]);
   gs.main = { name, sheetId: ss.getId(), created: today() };
   saveGroups(gs);
