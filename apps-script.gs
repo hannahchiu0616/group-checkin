@@ -2,6 +2,7 @@
 // 每個群組一份自己的試算表（自動建立在擁有者的 Google 雲端硬碟），網站用 ?g=群組代碼 分開
 // 安裝／更新：Apps Script 貼上這整段 → 存檔 → 部署 → 管理部署作業 → 鉛筆 → 版本選「新版本」→ 部署（網址不變）
 // 第一次：上方函式選 setupMain → 執行（建立這個網站的主群組，你自己是管理員）
+//         再選 testMail → 執行（開寄信權限：管理員第一次登入、忘記密碼要寄驗證碼）
 
 const SITE = "https://hannahchiu0616.github.io/group-checkin/";
 const TABS = {
@@ -140,6 +141,26 @@ function canAdmin(g, email) {
   if (g === "*") return false;
   return rows(book(g), "管理員").some(r => normEmail(r[0]) === email);
 }
+function checkEmail(s) {
+  const email = normEmail(s);
+  if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw new Error("Email 格式不對");
+  return email;
+}
+// 密碼只存加鹽後的雜湊，試算表和後台都看不到原本的密碼
+function hashPw(pw, salt) {
+  const bytes = s => Utilities.newBlob(String(s)).getBytes(), key = bytes(salt);
+  let h = Utilities.computeHmacSha256Signature(bytes(pw), key);
+  for (let i = 0; i < 200; i++) h = Utilities.computeHmacSha256Signature(h, key);
+  return Utilities.base64Encode(h);
+}
+// 發登入通行碼（30 天）
+function issue(g, email, action) {
+  cleanTokens();
+  const token = Utilities.getUuid();
+  props().setProperty("t_" + token, JSON.stringify({ g, email, exp: Date.now() + 30 * 864e5 }));
+  if (g !== "*") log(book(g), email, action, "");
+  return { token, email };
+}
 function cleanTokens() {
   const all = props().getProperties();
   for (const k in all) if (k.indexOf("t_") === 0) {
@@ -167,33 +188,40 @@ const ACTIONS = {
     return {};
   },
 
-  // 登入：Email 在管理員名單上就直接登入（不寄驗證碼）
+  // 登入：Email ＋ 密碼。連續錯 5 次鎖 15 分鐘
   login(p) {
-    const email = normEmail(p.email), g = p.admin ? "*" : p.g;
-    if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw new Error("Email 格式不對");
-    if (!canAdmin(g, email)) throw new Error("這個 Email 沒有管理權限");
-    cleanTokens();
-    const token = Utilities.getUuid();
-    props().setProperty("t_" + token, JSON.stringify({ g, email, exp: Date.now() + 30 * 864e5 }));
-    if (g !== "*") log(book(g), email, "登入", "");
-    return { token, email };
+    const email = checkEmail(p.email), g = p.admin ? "*" : p.g;
+    const fk = "fail:" + email, fails = Number(cache().get(fk) || 0);
+    if (fails >= 5) throw new Error("密碼錯太多次，請 15 分鐘後再試，或按「第一次登入／忘記密碼」重設");
+    const isAdmin = canAdmin(g, email), rec = JSON.parse(props().getProperty("pw_" + email) || "null");
+    if (isAdmin && !rec) throw new Error("這個 Email 還沒設定密碼，請按「第一次登入／忘記密碼」");
+    if (!isAdmin || hashPw(String(p.password || ""), rec.s) !== rec.h) {
+      cache().put(fk, String(fails + 1), 900);
+      throw new Error("Email 或密碼不對");
+    }
+    cache().remove(fk);
+    return issue(g, email, "登入");
   },
 
-  // （備用）寄驗證碼登入：要用的話網站改呼叫 requestCode / verifyCode
+  // 第一次登入／忘記密碼：先寄驗證碼到信箱，收到後設定密碼
   requestCode(p) {
-    const email = normEmail(p.email), g = p.admin ? "*" : p.g;
-    if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw new Error("Email 格式不對");
+    const email = checkEmail(p.email), g = p.admin ? "*" : p.g;
     if (!canAdmin(g, email)) throw new Error("這個 Email 沒有管理權限");
+    if (cache().get("cd:" + email)) throw new Error("剛剛已經寄過了，請等 1 分鐘再寄");
+    cache().put("cd:" + email, "1", 60);
     const code = String(Math.floor(100000 + Math.random() * 900000));
     cache().put("code:" + g + ":" + email, code, 600);
+    cache().remove("code:" + g + ":" + email + ":tries");
     const title = g === "*" ? "打卡網站總管理" : (settingsOf(book(g))["名稱"] || "打卡網站");
-    MailApp.sendEmail(email, `${title} 管理驗證碼：${code}`,
-      `你的驗證碼是 ${code}，10 分鐘內有效。\n\n如果不是你本人操作，請忽略這封信。`);
+    MailApp.sendEmail(email, `${title} 設定密碼驗證碼：${code}`,
+      `你的驗證碼是 ${code}，10 分鐘內有效，用來設定管理登入的密碼。\n\n如果不是你本人操作，請忽略這封信，你的密碼不會被改。`);
     return {};
   },
-  verifyCode(p) {
-    const email = normEmail(p.email), g = p.admin ? "*" : p.g, k = "code:" + g + ":" + email;
-    const c = cache().get(k);
+  setPassword(p) {
+    const email = checkEmail(p.email), g = p.admin ? "*" : p.g, pw = String(p.password || "");
+    if (pw.length < 8) throw new Error("密碼至少要 8 個字");
+    if (!canAdmin(g, email)) throw new Error("這個 Email 沒有管理權限");
+    const k = "code:" + g + ":" + email, c = cache().get(k);
     if (!c) throw new Error("驗證碼已過期，請重新寄送");
     if (c !== String(p.code || "").trim()) {
       // 錯 5 次這組驗證碼就作廢，避免被亂猜
@@ -204,11 +232,10 @@ const ACTIONS = {
     }
     cache().remove(k);
     cache().remove(k + ":tries");
-    cleanTokens();
-    const token = Utilities.getUuid();
-    props().setProperty("t_" + token, JSON.stringify({ g, email, exp: Date.now() + 30 * 864e5 }));
-    if (g !== "*") log(book(g), email, "登入", "");
-    return { token, email };
+    const s = Utilities.getUuid();
+    props().setProperty("pw_" + email, JSON.stringify({ s, h: hashPw(pw, s) }));
+    cache().remove("fail:" + email);
+    return issue(g, email, "設定密碼並登入");
   },
   logout(p) { if (p.token) props().deleteProperty("t_" + p.token); return {}; },
 

@@ -278,10 +278,23 @@ button.sm{padding:4px 9px;font-size:.85rem}
   <!-- 登入（管理頁和總管理共用） -->
   <div class="card rform" id="loginCard" hidden>
     <h2>管理登入</h2>
-    <p class="hint">只有管理員可以修改。輸入管理員名單上的 Email 就能登入。</p>
-    <div class="field"><label for="loginEmail">Email</label><input id="loginEmail" type="email" autocomplete="email" inputmode="email"></div>
-    <button type="button" class="report-btn" id="loginBtn">登入</button>
+    <p class="hint" id="loginIntro">只有管理員可以修改。用管理員名單上的 Email 和你設定的密碼登入。</p>
+    <div class="field"><label for="loginEmail">Email</label><input id="loginEmail" type="email" autocomplete="username" inputmode="email"></div>
+    <div id="pwLogin">
+      <div class="field"><label for="loginPw">密碼</label><input id="loginPw" type="password" autocomplete="current-password"></div>
+      <button type="button" class="report-btn" id="loginBtn">登入</button>
+    </div>
+    <div id="pwReset" hidden>
+      <button type="button" class="report-btn" id="sendCodeBtn">寄驗證碼到信箱</button>
+      <div id="codeStep" hidden>
+        <div class="field"><label for="resetCode">驗證碼</label><input id="resetCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6"><p class="hint">信件可能在垃圾郵件匣，10 分鐘內有效。</p></div>
+        <div class="field"><label for="newPw">新密碼</label><input id="newPw" type="password" autocomplete="new-password"><p class="hint">至少 8 個字。不要和 Gmail 或其他重要帳號用同一個密碼。</p></div>
+        <div class="field"><label for="newPw2">再輸入一次新密碼</label><input id="newPw2" type="password" autocomplete="new-password"></div>
+        <button type="button" class="report-btn" id="setPwBtn">設定密碼並登入</button>
+      </div>
+    </div>
     <p class="hint msg" id="loginMsg"></p>
+    <p class="hint" style="margin-top:14px"><button type="button" class="ghost sm" id="pwModeBtn">第一次登入／忘記密碼</button></p>
   </div>
   <datalist id="memberNames"></datalist>
 </div>
@@ -751,22 +764,56 @@ function showLoginState() {
   if (OWNER_MODE) $("ownerPanel").hidden = !inn; else $("adminPanel").hidden = !inn;
   if (inn) onLogin();
 }
-// Email 在管理員名單上就直接登入
-$("loginBtn").onclick = async () => {
+// 登入：Email ＋ 密碼；第一次登入或忘記密碼：寄驗證碼到信箱 → 設定密碼
+let resetMode = false;
+function setPwMode(on) {
+  resetMode = on;
+  $("pwLogin").hidden = on; $("pwReset").hidden = !on; $("codeStep").hidden = true;
+  $("sendCodeBtn").textContent = "寄驗證碼到信箱";
+  $("pwModeBtn").textContent = on ? "回到登入" : "第一次登入／忘記密碼";
+  $("loginIntro").textContent = on
+    ? "輸入管理員名單上的 Email，我們會寄驗證碼到這個信箱，收到後設定密碼。"
+    : "只有管理員可以修改。用管理員名單上的 Email 和你設定的密碼登入。";
+  setMsg("loginMsg", "");
+}
+$("pwModeBtn").onclick = () => setPwMode(!resetMode);
+function loggedIn(r) {
+  TOKEN = r.token; ME = r.email;
+  store.set(tokKey(), TOKEN); store.set(tokKey() + ":email", ME);
+  $("loginPw").value = $("newPw").value = $("newPw2").value = $("resetCode").value = "";
+  setPwMode(false);
+  showLoginState();
+}
+async function busy(btn, text, fn) {
   const email = $("loginEmail").value.trim();
   if (!email) return setMsg("loginMsg", "請輸入 Email", "err");
-  $("loginBtn").disabled = true;
-  setMsg("loginMsg", "登入中…");
-  try {
-    const r = await api({ action: "login", email });
-    TOKEN = r.token; ME = r.email;
-    store.set(tokKey(), TOKEN); store.set(tokKey() + ":email", ME);
-    setMsg("loginMsg", "");
-    showLoginState();
-  } catch (e) { setMsg("loginMsg", esc(e.message), "err"); }
-  finally { $("loginBtn").disabled = false; }
-};
-$("loginEmail").onkeydown = e => { if (e.key === "Enter") $("loginBtn").click(); };
+  btn.disabled = true;
+  setMsg("loginMsg", text);
+  try { await fn(email); } catch (e) { setMsg("loginMsg", esc(e.message), "err"); }
+  finally { btn.disabled = false; }
+}
+$("loginBtn").onclick = () => busy($("loginBtn"), "登入中…", async email => {
+  const password = $("loginPw").value;
+  if (!password) throw new Error("請輸入密碼");
+  loggedIn(await api({ action: "login", email, password }));
+});
+$("sendCodeBtn").onclick = () => busy($("sendCodeBtn"), "寄送中…", async email => {
+  await api({ action: "requestCode", email });
+  $("codeStep").hidden = false;
+  $("sendCodeBtn").textContent = "重新寄驗證碼";
+  setMsg("loginMsg", "已寄出，請到信箱收驗證碼", "ok");
+  $("resetCode").focus();
+});
+$("setPwBtn").onclick = () => busy($("setPwBtn"), "設定中…", async email => {
+  const code = $("resetCode").value.trim(), password = $("newPw").value;
+  if (!/^\d{6}$/.test(code)) throw new Error("驗證碼是 6 位數字");
+  if (password.length < 8) throw new Error("密碼至少要 8 個字");
+  if (password !== $("newPw2").value) throw new Error("兩次輸入的密碼不一樣");
+  loggedIn(await api({ action: "setPassword", email, code, password }));
+});
+$("loginEmail").onkeydown = e => { if (e.key === "Enter") (resetMode ? $("sendCodeBtn") : $("loginPw")).focus(); };
+$("loginPw").onkeydown = e => { if (e.key === "Enter") $("loginBtn").click(); };
+$("newPw2").onkeydown = e => { if (e.key === "Enter") $("setPwBtn").click(); };
 
 /* ---------- 管理頁 ---------- */
 let ADMIN = null, adminSec = "settings";
