@@ -100,6 +100,7 @@ a{color:var(--accent)}
 .itemsel button{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-weight:600}
 .itemsel button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
 .mine-item{font-size:.8rem;font-weight:600;margin:10px 0 0}
+.sheet-link{border:1px solid var(--accent);color:var(--accent);border-radius:8px;padding:4px 9px;font-size:.85rem;text-decoration:none;white-space:nowrap}
 .task-row{display:flex;gap:8px;align-items:center;margin-top:8px;max-width:420px}
 .task-no{flex:none;width:2em;font-weight:700;color:var(--muted)}
 .task-row input{flex:1;min-width:0}
@@ -259,6 +260,7 @@ button.sm{padding:4px 9px;font-size:.85rem}
     <div id="adminPanel" hidden>
       <div class="card admin-head">
         <span>已登入：<b id="adminEmail"></b></span><span class="spacer"></span>
+        <a class="sheet-link" id="sheetLink" target="_blank" rel="noopener" hidden title="要有試算表的共用權限才打得開">📊 打開試算表</a>
         <button type="button" class="ghost sm" id="logoutBtn">登出</button>
       </div>
       <div class="chips" id="adminChips"></div>
@@ -871,7 +873,11 @@ const SECTIONS = [
 async function openAdmin() {
   $("adminEmail").textContent = ME;
   $("adminSec").innerHTML = `<p class="hint">讀取中…</p>`;
-  try { ADMIN = await api({ action: "adminData" }); }
+  try {
+    ADMIN = await api({ action: "adminData" });
+    if (ADMIN.sheet) $("sheetLink").href = ADMIN.sheet;
+    $("sheetLink").hidden = !ADMIN.sheet;
+  }
   catch (e) {
     $("adminSec").innerHTML = `<p class="msg err">${esc(e.message)}</p><button type="button" class="ghost" id="retryAdmin" style="margin-top:10px">重試</button>`;
     $("retryAdmin").onclick = openAdmin;

@@ -233,7 +233,8 @@ const ACTIONS = {
   // 管理頁需要的資料（管理員名單、修改紀錄）
   adminData(p) {
     const { ss, email } = auth(p);
-    return { email, admins: rows(ss, "管理員").map(r => r[0]), log: rows(ss, "修改紀錄").slice(-200).reverse(), ex: rows(ss, "免除") };
+    return { email, admins: rows(ss, "管理員").map(r => r[0]), log: rows(ss, "修改紀錄").slice(-200).reverse(), ex: rows(ss, "免除"),
+      sheet: ss.getUrl() };   // 管理頁「打開試算表」連結（要有試算表的共用權限才打得開）
   },
   saveSettings(p) {
     const { ss, email } = auth(p);
