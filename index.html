@@ -100,6 +100,9 @@ a{color:var(--accent)}
 .itemsel button{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-weight:600}
 .itemsel button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
 .mine-item{font-size:.8rem;font-weight:600;margin:10px 0 0}
+.task-row{display:flex;gap:8px;align-items:center;margin-top:8px;max-width:420px}
+.task-no{flex:none;width:2em;font-weight:700;color:var(--muted)}
+.task-row input{flex:1;min-width:0}
 .mine{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .mine span{text-align:center;font-size:.75rem;color:var(--muted)}
 .msg{margin:10px 0 0}
@@ -404,7 +407,8 @@ function build(recs, s, item) {
   const current = nowDay();                // 目前還在進行中的那一天
   const start = normDate(s.startDate);
   const multi = s.items.length > 1;
-  const itemOf = r => (multi && s.items.includes(r.item)) ? r.item : s.items[0];
+  // 沒寫項目的舊回報算第一項；寫了現在已經刪掉（或改名）的項目，就不算進任何一項
+  const itemOf = r => !multi || !r.item ? s.items[0] : s.items.includes(r.item) ? r.item : null;
 
   // 同一人同一項兩次送出相隔不到 1 小時 → 當成不小心送了兩次（只看舊表單的紀錄；網站回報有自己的日期）
   const lastTs = {};
@@ -906,7 +910,6 @@ function secSettings() {
     ["網站", [
       ["名稱", "網站名稱", "text", ""],
       ["副標題", "副標題", "text", "顯示在網站名稱下面"],
-      ["任務名稱", "每天要做的事", "text", "例如：觀心書；好幾項用「、」隔開，例如：打拳、觀心書（每項分開算、分開罰）"],
       ["罰款名稱", "罰款叫什麼", "text", "例如：功德金"],
     ]],
     ["計算規則", [
@@ -930,12 +933,32 @@ function secSettings() {
     <p class="hint msg" id="secMsg" style="margin:0 0 6px"></p>` +
     GROUPS.map(([g, F]) => `<div class="set-group"><h3>${esc(g)}</h3><div class="set-grid">` +
       F.map(([k, l, t, h]) => `<div class="set-field"><label>${l}</label><input data-k="${k}" type="${t}" value="${esc(val(k, t))}">${h ? `<p class="hint">${h}</p>` : ""}</div>`).join("") +
-      `</div></div>`).join("") +
+      `</div></div>`).join("")
+      // 定課內容：一項一欄（存檔時用「、」接起來放在「任務名稱」）
+      .replace(`<div class="set-group"><h3>計算規則</h3>`, `<div class="set-group"><h3>定課內容</h3>
+        <p class="hint" style="margin:0 0 4px">一欄一項，每項分開打卡、分開罰款。月中新增的項目，加入前的日子會算沒做，建議月初再加，或把開始計算日改成新增那天。刪掉或改名的項目，舊的紀錄就不再計算。</p>
+        <div id="taskList"></div>
+        <button type="button" class="ghost sm" id="addTask" style="margin-top:10px">＋ 新增一項</button></div>
+      <div class="set-group"><h3>計算規則</h3>`) +
     `<div class="set-group"><h3>規則說明</h3><p class="hint" style="margin:0 0 6px">一行一條，會顯示在「回報紀錄」上面</p>
       <textarea data-k="規則說明" rows="6">${esc(s["規則說明"] || "")}</textarea></div>`;
+  const taskRow = v => `<div class="task-row"><span class="task-no"></span><input class="task-in" maxlength="20" value="${esc(v)}" placeholder="例如：打拳"><button type="button" class="ghost sm" data-del-task>刪除</button></div>`;
+  const renumber = () => $("taskList").querySelectorAll(".task-no").forEach((el, i) => el.textContent = `${i + 1}.`);
+  $("taskList").innerHTML = (SETTINGS.items.length ? SETTINGS.items : [""]).map(taskRow).join("");
+  renumber();
+  $("addTask").onclick = () => {
+    $("taskList").insertAdjacentHTML("beforeend", taskRow(""));
+    renumber();
+    [...$("taskList").querySelectorAll(".task-in")].pop().focus();
+  };
+  $("taskList").onclick = e => { const b = e.target.closest("[data-del-task]"); if (b) { b.closest(".task-row").remove(); renumber(); } };
   $("saveSettings").onclick = () => {
     const settings = {};
     $("adminSec").querySelectorAll("[data-k]").forEach(el => { settings[el.dataset.k] = el.value.trim(); });
+    // 項目名稱裡不能有分隔用的符號；重複的只留一個
+    const tasks = [...new Set([...$("taskList").querySelectorAll(".task-in")].map(i => i.value.replace(/[、,，\/]/g, " ").trim()).filter(Boolean))];
+    if (!tasks.length) return setMsg("secMsg", "定課內容至少要有一項", "err");
+    settings["任務名稱"] = tasks.join("、");
     saving(() => api({ action: "saveSettings", settings }));
   };
 }
@@ -1046,7 +1069,7 @@ let admPick = "";
 function secReports() {
   const ym = $("month").value, names = MODEL.members.map(m => m.name);
   const multi = SETTINGS.items.length > 1;
-  const itemOk = r => !multi || (SETTINGS.items.includes(String(r[4] || "").trim()) ? String(r[4]).trim() : SETTINGS.items[0]) === ITEM;
+  const itemOk = r => { const it = String(r[4] || "").trim(); return !multi || (it || SETTINGS.items[0]) === ITEM; };
   $("adminSec").innerHTML = `<h2>每個人的打卡紀錄（${ym.replace("-", " 年 ")} 月${multi ? `・${esc(ITEM)}` : ""}）</h2>
     <p class="hint" style="margin-bottom:10px">選一個人看他每一天的狀況。打錯的回報可以刪除，缺交的日子可以補登（補登不算遲交）。要看別的月份，改上面的「月份」${multi ? "；要看別的項目，按上面的項目" : ""}。</p>
     <div class="names" id="admNames">${names.map(n => `<button type="button" data-name="${esc(n)}" aria-pressed="${n === admPick}">${esc(n)}</button>`).join("")}</div>
