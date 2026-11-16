@@ -13,6 +13,7 @@ const TABS = {
   "手算調整": ["名字", "月份", "金額"],
   "管理員": ["Email"],
   "修改紀錄": ["時間", "Email", "動作", "內容"],
+  "回報封存": ["時間戳記", "姓名", "日期", "狀態", "項目"],   // 超過保留月數的舊回報搬來這裡（網站不讀）
 };
 const PUBLIC_TABS = ["成員", "回報", "免除", "退出休息", "手算調整"];   // 大家都看得到（管理員、修改紀錄不公開）
 const EDIT_TABS = ["成員", "免除", "退出休息", "手算調整", "管理員"];   // 管理頁可以整份修改的分頁
@@ -73,7 +74,8 @@ function settingsOf(ss) { const o = {}; rows(ss, "設定").forEach(([k, v]) => {
 function log(ss, email, action, detail) { append(ss, "修改紀錄", [[now(), email, action, String(detail || "").slice(0, 500)]]); }
 function out(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
 
-// 資料保留：只留最近 N 個月（含這個月）的回報，空白或 0＝全部保留；回傳刪掉幾筆
+// 資料保留：「回報」只留最近 N 個月（含這個月），更早的先搬到「回報封存」分頁再刪（網站不讀封存，所以不會變慢）
+// 空白或 0＝全部留在「回報」；回傳搬走幾筆
 function prune(ss) {
   const n = parseInt(settingsOf(ss)["保留月數"], 10);
   if (!n || n < 1) return 0;
@@ -84,6 +86,7 @@ function prune(ss) {
   const all = rows(ss, "回報");
   const keep = all.filter(r => (ym(r[2]) || ym(r[0])) >= keepFrom);
   if (keep.length === all.length) return 0;
+  append(ss, "回報封存", all.filter(r => keep.indexOf(r) < 0));   // 先存副本，存成功才刪
   setRows(ss, "回報", keep);
   return all.length - keep.length;
 }
@@ -240,7 +243,7 @@ const ACTIONS = {
     const changed = keys.filter(k => k in s && String(s[k]) !== String(old[k] || ""));
     log(ss, email, "修改設定", changed.map(k => `${k}：${old[k] || "（空）"} → ${s[k] || "（空）"}`).join("；") || "沒有變更");
     const n = prune(ss);
-    if (n) log(ss, email, "清除舊資料", `刪掉 ${n} 筆超過保留月數的回報`);
+    if (n) log(ss, email, "封存舊資料", `${n} 筆超過保留月數的回報搬到「回報封存」分頁`);
     return {};
   },
   saveTab(p) {
