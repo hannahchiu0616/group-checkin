@@ -675,10 +675,10 @@ function render() {
   const tip = { ok: "已回報", miss: "缺交", late: "遲交", cov: "用免死次數抵掉", free: `${S.exName}免除`, now: "計算中", na: "不計算", nodata: "沒有資料" };
   const mi = MVIEW && S.monthly.find(x => x.name === MVIEW);
   if (mi) {
-    // 每月定課：每個人一列、每個月一欄（含現在進行中的這一期，最多看最近 6 期）
-    const cyc = monthlyCycle(mi);
-    const months = [...new Set(MODEL.months.concat(cyc))].sort().slice(-6);
-    const word = { ok: "已完成", miss: "沒做", now: "進行中", na: "不計算" };
+    // 每月定課：每個人一列、每個月一欄（現在進行中的這一期，加上前 6 期）
+    const cyc = monthlyCycle(mi), months = [];
+    for (let i = 6; i >= 0; i--) { const x = fromKey(cyc + "-01"); x.setMonth(x.getMonth() - i); months.push(key(x).slice(0, 7)); }
+    const word = { ok: "已完成", miss: "沒做", now: "進行中", na: "" };   // 不計算只顯示「·」，比較不吵
     $("grid").classList.add("mview");
     document.querySelector('[data-panel="daily"] .month-note').hidden = true;
     $("grid").innerHTML = `<tr><th class="name">成員</th>${months.map(y => `<th>${+y.slice(5)} 月<br><small>${md(monthlyDue(mi, y))} 前</small></th>`).join("")}</tr>` +
