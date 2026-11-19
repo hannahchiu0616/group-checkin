@@ -70,6 +70,8 @@ td.zero{color:var(--ok);font-weight:700}
 .pay-names button{white-space:normal;line-height:1.3}
 .pay-names button small{display:block;font-size:.75rem;font-weight:700;color:var(--bad)}
 .pay-names button.settled{opacity:.35}
+.pay-names button.settled[aria-pressed="true"]{opacity:1}
+.pay-names button[aria-pressed="true"] small{color:#fff}
 .pay-names button.settled small{color:var(--muted);font-weight:500}
 .paid{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer}
 .paid input{width:18px;height:18px;margin:0}
@@ -236,8 +238,9 @@ button.sm{padding:4px 9px;font-size:.85rem}
     </div>
     <!-- 繳款回報：只有管理員登入後看得到 -->
     <div data-kind-panel="pay" hidden>
-      <p class="hint" style="margin:12px 0 8px">點名字記錄已繳，「本月結算」的繳交欄會跟著更新。名字下面是還沒繳的金額（含這個月）；變淡的是已繳清或不用繳。記錯了，再點一次變淡的名字可以取消最近一次的已繳。</p>
+      <p class="hint" style="margin:12px 0 8px">選要記錄的人（可以複選），再按下面的「確認繳款」，「本月結算」的繳交欄會跟著更新。名字下面是還沒繳的金額（含這個月）；變淡的是已繳清或不用繳。記錯了，選變淡的名字再確認，可以取消他最近一次的已繳。</p>
       <div class="names pay-names" id="payList"></div>
+      <button type="button" class="report-btn" id="payConfirm" disabled>確認繳款</button>
     </div>
     <div data-kind-panel="daily">
       <div class="field" id="itemField" hidden>
@@ -869,38 +872,53 @@ function updateReport() {
 }
 // 繳款回報（管理員）：每個名字下面是還沒繳的金額（含這個月），已繳清的變淡；點名字記錄已繳。
 // 這是唯一記錄繳款的地方，本月結算的「繳交」欄直接照這裡顯示
+let pickedPay = [];   // 繳款回報：選了哪些人（複選）
+const lastPaidMonth = name => Object.keys(paidMap()).filter(k => k.startsWith(name + "|")).map(k => k.split("|")[1]).sort().pop();
 function renderPayList() {
   if (!MODEL) return;
   const list = MODEL.members.map(m => ({ m, u: unpaidOf(m, true) })).filter(({ m, u }) => u.total || !MODEL.exitedBefore(m, MODEL.current));
-  $("payList").innerHTML = list.map(({ m, u }) => `<button type="button" data-pay="${esc(m.name)}" class="${u.total ? "" : "settled"}" title="${esc(u.total ? oweText(u) : "沒有要繳的")}">${esc(m.name)}<small>${u.total ? `$${u.total.toLocaleString()}` : "已繳清"}</small>${u.list.length > 1 ? `<small style="font-weight:400">${esc(oweText(u))}</small>` : ""}</button>`).join("") ||
+  pickedPay = pickedPay.filter(n => list.some(({ m }) => m.name === n));
+  $("payList").innerHTML = list.map(({ m, u }) => `<button type="button" data-pay="${esc(m.name)}" class="${u.total ? "" : "settled"}" aria-pressed="${pickedPay.includes(m.name)}" title="${esc(u.total ? oweText(u) : "沒有要繳的")}">${esc(m.name)}<small>${u.total ? `$${u.total.toLocaleString()}` : "已繳清"}</small></button>`).join("") ||
     `<p class="hint">還沒有成員</p>`;
+  updatePayConfirm();
 }
-$("payList").onclick = async e => {
+// 確認鈕上寫選了幾個人、合計多少
+function updatePayConfirm() {
+  const us = pickedPay.map(n => unpaidOf(MODEL.members.find(x => x.name === n), true));
+  const total = us.reduce((a, u) => a + u.total, 0), cancel = us.filter(u => !u.total).length;
+  $("payConfirm").disabled = !pickedPay.length;
+  $("payConfirm").textContent = !pickedPay.length ? "確認繳款" :
+    `確認繳款（${pickedPay.length} 人${total ? `，合計 $${total.toLocaleString()}` : ""}${cancel ? `，${cancel} 人取消已繳` : ""}）`;
+}
+$("payList").onclick = e => {
   const b = e.target.closest("[data-pay]");
   if (!b) return;
-  const m = MODEL.members.find(x => x.name === b.dataset.pay), u = unpaidOf(m, true);
-  let todo, ok;
-  if (u.total) {
-    if (!confirm(`${m.name} 繳交${SETTINGS.fineName} $${u.total.toLocaleString()}？\n（${oweText(u)}）`)) return;
-    todo = u.list.map(x => ({ month: x.ym, paid: true }));
-    ok = `✅ 已記錄 ${esc(m.name)} 繳交 $${u.total.toLocaleString()}`;
-  } else {
-    // 已繳清的再點一次：可以取消最近一次的已繳（記錯的時候用）
-    const last = Object.keys(paidMap()).filter(k => k.startsWith(m.name + "|")).map(k => k.split("|")[1]).sort().pop();
-    if (!last) return reportMsg(`${esc(m.name)} 沒有要繳的${esc(SETTINGS.fineName)}`);
-    if (!confirm(`取消 ${m.name} ${+last.slice(5)} 月的已繳紀錄？`)) return;
-    todo = [{ month: last, paid: false }];
-    ok = `已取消 ${esc(m.name)} ${+last.slice(5)} 月的已繳紀錄`;
-  }
-  b.disabled = true;
+  const n = b.dataset.pay;
+  pickedPay = pickedPay.includes(n) ? pickedPay.filter(x => x !== n) : pickedPay.concat(n);
+  b.setAttribute("aria-pressed", pickedPay.includes(n));
+  reportMsg("");
+  updatePayConfirm();
+};
+$("payConfirm").onclick = async () => {
+  // 每個選的人：還沒繳的 → 全部記成已繳；已繳清的 → 取消最近一次的已繳（記錯的時候用）
+  const plan = pickedPay.map(n => {
+    const m = MODEL.members.find(x => x.name === n), u = unpaidOf(m, true);
+    if (u.total) return { n, text: `${n} $${u.total.toLocaleString()}（${oweText(u)}）`, todo: u.list.map(x => ({ month: x.ym, paid: true })) };
+    const last = lastPaidMonth(n);
+    return last ? { n, text: `取消 ${n} ${+last.slice(5)} 月的已繳`, todo: [{ month: last, paid: false }] } : null;
+  }).filter(Boolean);
+  if (!plan.length) return reportMsg(`選的人沒有要繳的${esc(SETTINGS.fineName)}`);
+  if (!confirm(`確認以下繳款？\n\n${plan.map(p => p.text).join("\n")}`)) return;
+  $("payConfirm").disabled = true;
   reportMsg("記錄中…");
   try {
-    for (const x of todo) await api({ action: "setPaid", name: m.name, ...x });
-    reportMsg(ok, "ok");
+    for (const p of plan) for (const x of p.todo) await api({ action: "setPaid", name: p.n, ...x });
+    reportMsg(`✅ 已記錄：${esc(plan.map(p => p.n).join("、"))}`, "ok");
+    pickedPay = [];
     await load();
   } catch (err) {
-    reportMsg(`沒有存到：${esc(err.message)}`, "err");
-    b.disabled = false;
+    reportMsg(`沒有全部存到：${esc(err.message)}，請重新整理看哪些已經記錄`, "err");
+    $("payConfirm").disabled = false;
   }
 };
 // 繳款回報只給登入的管理員
