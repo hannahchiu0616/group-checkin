@@ -236,7 +236,7 @@ button.sm{padding:4px 9px;font-size:.85rem}
     </div>
     <!-- 繳款回報：只有管理員登入後看得到 -->
     <div data-kind-panel="pay" hidden>
-      <p class="hint" style="margin:12px 0 8px">點名字記錄已繳。名字下面是還沒繳的金額（只算已經結束的月份）；變淡的是已繳清或不用繳。要取消已繳，到「本月結算」把勾拿掉。</p>
+      <p class="hint" style="margin:12px 0 8px">點名字記錄已繳，「本月結算」的繳交欄會跟著更新。名字下面是還沒繳的金額（含這個月）；變淡的是已繳清或不用繳。記錯了，再點一次變淡的名字可以取消最近一次的已繳。</p>
       <div class="names pay-names" id="payList"></div>
     </div>
     <div data-kind-panel="daily">
@@ -609,11 +609,12 @@ function paidMap() {
   return o;
 }
 const monthTotal = (m, ym) => (SETTINGS.items.length > 1 || SETTINGS.monthly.length) ? monthAll(m, ym) : monthDetail(m, ym);
-// 還沒繳的罰款：只算已經結束的月份（這個月還在累計，下個月才算要繳）
-function unpaidOf(m) {
+// 還沒繳的罰款。withCurrent：連這個月（還在累計中）也算——繳款回報用，跟本月結算的「繳交」欄一致；
+// 成員自己看到的提醒只算已經結束的月份
+function unpaidOf(m, withCurrent = false) {
   const cur = nowDay().slice(0, 7), paid = paidMap(), list = [];
   for (const ym of MODEL.months) {
-    if (ym >= cur) continue;
+    if (ym > cur || (ym === cur && !withCurrent)) continue;
     const owe = monthTotal(m, ym).owe;
     if (owe > 0 && !paid[m.name + "|" + ym]) list.push({ ym, owe });
   }
@@ -696,15 +697,12 @@ function render() {
 
   const free = S.freePerMonth;
   $("sumTitle").textContent = `${ym.replace("-", " 年 ").replace(/ 0/, " ")} 月結算`;
-  // 繳交欄：管理員登入後可以勾已繳；其他人只看結果
-  const paid = {};
-  for (const r of DATA["繳費"] || []) paid[r[0] + "|" + r[1]] = normDate(r[2]) || r[2] || "已繳";
-  const canPay = !!TOKEN && !OWNER_MODE;
-  $("sumHint").textContent = "要看以前的月份，改最上面的「月份」。" + (canPay ? "勾「繳交」欄就會記錄已繳。" : "管理員登入後可以在「繳交」欄記錄已繳。");
+  // 繳交欄：只顯示，直接照「繳款回報」記錄的結果（不在這裡手動改）
+  const paid = paidMap();
+  $("sumHint").textContent = "要看以前的月份，改最上面的「月份」。「繳交」欄會依管理員在回報專區「繳款回報」的記錄自動更新。";
   const payCell = (m, t) => {
     const p = paid[m.name + "|" + ym], when = p && /^\d{4}-/.test(p) ? ` ${md(p)}` : "";
     if (!t.owe && !p) return `<td class="num zero">—</td>`;
-    if (canPay) return `<td class="num"><label class="paid"><input type="checkbox" data-paid="${esc(m.name)}" ${p ? "checked" : ""}> ${p ? `已繳${when}` : "未繳"}</label></td>`;
     return `<td class="num ${p ? "paid-ok" : "money"}">${p ? `✓ 已繳${when}` : "未繳"}</td>`;
   };
   if (multi) {
@@ -869,24 +867,36 @@ function updateReport() {
   $("reportHint").textContent = hint;
   showMine(n);
 }
-// 繳款回報（管理員）：每個名字下面是還沒繳的金額，已繳清的變淡；點名字記錄已繳
+// 繳款回報（管理員）：每個名字下面是還沒繳的金額（含這個月），已繳清的變淡；點名字記錄已繳。
+// 這是唯一記錄繳款的地方，本月結算的「繳交」欄直接照這裡顯示
 function renderPayList() {
   if (!MODEL) return;
-  const list = MODEL.members.map(m => ({ m, u: unpaidOf(m) })).filter(({ m, u }) => u.total || !MODEL.exitedBefore(m, MODEL.current));
-  $("payList").innerHTML = list.map(({ m, u }) => `<button type="button" data-pay="${esc(m.name)}" class="${u.total ? "" : "settled"}" title="${esc(u.total ? oweText(u) : "沒有要繳的")}">${esc(m.name)}<small>${u.total ? `$${u.total.toLocaleString()}` : "已繳清"}</small></button>`).join("") ||
+  const list = MODEL.members.map(m => ({ m, u: unpaidOf(m, true) })).filter(({ m, u }) => u.total || !MODEL.exitedBefore(m, MODEL.current));
+  $("payList").innerHTML = list.map(({ m, u }) => `<button type="button" data-pay="${esc(m.name)}" class="${u.total ? "" : "settled"}" title="${esc(u.total ? oweText(u) : "沒有要繳的")}">${esc(m.name)}<small>${u.total ? `$${u.total.toLocaleString()}` : "已繳清"}</small>${u.list.length > 1 ? `<small style="font-weight:400">${esc(oweText(u))}</small>` : ""}</button>`).join("") ||
     `<p class="hint">還沒有成員</p>`;
 }
 $("payList").onclick = async e => {
   const b = e.target.closest("[data-pay]");
   if (!b) return;
-  const m = MODEL.members.find(x => x.name === b.dataset.pay), u = unpaidOf(m);
-  if (!u.total) return reportMsg(`${esc(m.name)} 沒有要繳的${esc(SETTINGS.fineName)}`);
-  if (!confirm(`${m.name} 繳交${SETTINGS.fineName} $${u.total.toLocaleString()}？\n（${oweText(u)}）`)) return;
+  const m = MODEL.members.find(x => x.name === b.dataset.pay), u = unpaidOf(m, true);
+  let todo, ok;
+  if (u.total) {
+    if (!confirm(`${m.name} 繳交${SETTINGS.fineName} $${u.total.toLocaleString()}？\n（${oweText(u)}）`)) return;
+    todo = u.list.map(x => ({ month: x.ym, paid: true }));
+    ok = `✅ 已記錄 ${esc(m.name)} 繳交 $${u.total.toLocaleString()}`;
+  } else {
+    // 已繳清的再點一次：可以取消最近一次的已繳（記錯的時候用）
+    const last = Object.keys(paidMap()).filter(k => k.startsWith(m.name + "|")).map(k => k.split("|")[1]).sort().pop();
+    if (!last) return reportMsg(`${esc(m.name)} 沒有要繳的${esc(SETTINGS.fineName)}`);
+    if (!confirm(`取消 ${m.name} ${+last.slice(5)} 月的已繳紀錄？`)) return;
+    todo = [{ month: last, paid: false }];
+    ok = `已取消 ${esc(m.name)} ${+last.slice(5)} 月的已繳紀錄`;
+  }
   b.disabled = true;
   reportMsg("記錄中…");
   try {
-    for (const x of u.list) await api({ action: "setPaid", name: m.name, month: x.ym, paid: true });
-    reportMsg(`✅ 已記錄 ${esc(m.name)} 繳交 $${u.total.toLocaleString()}`, "ok");
+    for (const x of todo) await api({ action: "setPaid", name: m.name, ...x });
+    reportMsg(ok, "ok");
     await load();
   } catch (err) {
     reportMsg(`沒有存到：${esc(err.message)}`, "err");
@@ -1025,23 +1035,8 @@ function showLoginState() {
   $("loginCard").hidden = inn;
   if (OWNER_MODE) $("ownerPanel").hidden = !inn; else $("adminPanel").hidden = !inn;
   if (inn) onLogin();
-  if (MODEL && !OWNER_MODE) render();   // 本月結算的「繳交」欄：登入後可以勾、登出後只能看
-  updatePayKind();
+  updatePayKind();   // 繳款回報只給登入的管理員
 }
-// 本月結算：管理員勾／取消「已繳」
-$("summaryTable").onchange = async e => {
-  const cb = e.target.closest("[data-paid]");
-  if (!cb) return;
-  const name = cb.dataset.paid, month = $("month").value, paid = cb.checked;
-  cb.disabled = true;
-  try {
-    await api({ action: "setPaid", name, month, paid });
-    await load();
-  } catch (err) {
-    alert(`沒有存到：${err.message}`);
-    cb.checked = !paid; cb.disabled = false;
-  }
-};
 // Email 在管理員名單上就直接登入
 $("loginBtn").onclick = async () => {
   const email = $("loginEmail").value.trim();
