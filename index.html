@@ -675,11 +675,11 @@ function render() {
   const tip = { ok: "已回報", miss: "缺交", late: "遲交", cov: "用免死次數抵掉", free: `${S.exName}免除`, now: "計算中", na: "不計算", nodata: "沒有資料" };
   const mi = MVIEW && S.monthly.find(x => x.name === MVIEW);
   if (mi) {
-    // 每月定課：每個人一列、每個月一欄。最多 6 期（含現在進行中的這期），更早的不顯示（試算表裡還在）；
+    // 每月定課：每個人一列、每個月一欄。最多 12 期（含現在進行中的這期），更早的不顯示（試算表裡還在）；
     // 還沒開始計算的月份（每個人都是「不計算」）也不顯示，所以一開始只有一欄，每個月多一欄
     const cyc = monthlyCycle(mi);
     let months = [];
-    for (let i = 5; i >= 0; i--) { const x = fromKey(cyc + "-01"); x.setMonth(x.getMonth() - i); months.push(key(x).slice(0, 7)); }
+    for (let i = 11; i >= 0; i--) { const x = fromKey(cyc + "-01"); x.setMonth(x.getMonth() - i); months.push(key(x).slice(0, 7)); }
     while (months.length > 1 && ROWS.every(({ m }) => monthlyStatus(m, mi, months[0]) === "na")) months.shift();
     const word = { ok: "已完成", miss: "沒做", now: "進行中", na: "" };   // 不計算只顯示「·」，比較不吵
     $("grid").classList.add("mview");
