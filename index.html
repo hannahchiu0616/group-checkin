@@ -1074,10 +1074,11 @@ function secLog() {
 let admPick = "";
 function secReports() {
   const ym = $("month").value, names = MODEL.members.map(m => m.name);
-  const multi = SETTINGS.items.length > 1;
-  const itemOk = r => { const it = String(r[4] || "").trim(); return !multi || (it || SETTINGS.items[0]) === ITEM; };
-  $("adminSec").innerHTML = `<h2>每個人的打卡紀錄（${ym.replace("-", " 年 ")} 月${multi ? `・${esc(ITEM)}` : ""}）</h2>
-    <p class="hint" style="margin-bottom:10px">選一個人看他每一天的狀況。打錯的回報可以刪除，缺交的日子可以補登（補登不算遲交）。要看別的月份，改上面的「月份」${multi ? "；要看別的項目，按上面的項目" : ""}。</p>
+  const multi = SETTINGS.items.length > 1, ITEMS = SETTINGS.items;
+  // 回報算哪一項（沒寫項目的算第一項；寫了已經刪掉的項目就不列）
+  const itemOfRow = r => { const it = String(r[4] || "").trim(); return !multi || !it ? ITEMS[0] : ITEMS.includes(it) ? it : null; };
+  $("adminSec").innerHTML = `<h2>每個人的打卡紀錄（${ym.replace("-", " 年 ")} 月）</h2>
+    <p class="hint" style="margin-bottom:10px">選一個人看他每一天的狀況${multi ? "，每項定課一欄" : ""}。打錯的回報可以刪除，缺交的日子可以補登（補登不算遲交）。要看別的月份，改上面的「月份」。</p>
     <div class="names" id="admNames">${names.map(n => `<button type="button" data-name="${esc(n)}" aria-pressed="${n === admPick}">${esc(n)}</button>`).join("")}</div>
     <div id="admList" style="margin-top:14px"></div>
     <p class="hint msg" id="secMsg"></p>`;
@@ -1086,32 +1087,41 @@ function secReports() {
   const listFor = n => {
     const m = MODEL.members.find(x => x.name === n);
     if (!m) { $("admList").innerHTML = ""; return; }
-    const t = monthDetail(m, ym, MODEL, multi);
-    // 這個人這個月的每一筆回報（目前選的項目），依「算哪一天」分好
+    // 每項定課各自的明細，加上全部合計（手算調整蓋的是合計）
+    const per = {};
+    for (const it of ITEMS) per[it] = monthDetail(m, ym, multi ? MODELS[it] : MODEL, multi);
+    const t = multi ? monthAll(m, ym) : per[ITEMS[0]];
+    // 這個人這個月的每一筆回報，依「哪一項」「算哪一天」分好
     const byDay = {};
+    for (const it of ITEMS) byDay[it] = {};
     for (const r of DATA["回報"] || []) {
-      if (String(r[1]).replace(/\s*[（(].*$/, "").trim() !== n || !itemOk(r)) continue;
+      const it = itemOfRow(r);
+      if (String(r[1]).replace(/\s*[（(].*$/, "").trim() !== n || !it) continue;
       const ts = parseDateTime(r[0]);
       const day = normDate(r[2]) || (ts ? dayOf(ts.getTime()) : "");
-      if (day.slice(0, 7) === ym) (byDay[day] ||= []).push(r);
+      if (day.slice(0, 7) === ym) (byDay[it][day] ||= []).push(r);
     }
-    const missAll = t.miss + t.cells.filter(c => c.was === "miss").length;
-    const lateAll = t.late + t.cells.filter(c => c.was === "late").length;
-    const cells = t.cells.filter(c => c.d <= MODEL.current || byDay[c.d] || c.st === "free").slice().reverse();
+    const cellOf = (it, d) => per[it].cells.find(c => c.d === d);
+    const days = monthDays(ym).filter(d => d <= MODEL.current || ITEMS.some(it => byDay[it][d] || cellOf(it, d)?.st === "free")).reverse();
+    const sym = { ok: "✓", miss: "✗", late: "遲", cov: "抵", free: "免", now: "…", na: "·", nodata: "?" };
+    const shortTs = s => { const p = parseDateTime(s); return p ? `${p.getMonth() + 1}/${p.getDate()} ${pad(p.getHours())}:${pad(p.getMinutes())}` : s; };
+    // 一格：狀態＋送出時間（可刪）＋補登
+    const cellHtml = (it, d) => {
+      const c = cellOf(it, d) || { st: "na" }, st = c.st === "cov" ? c.was : c.st, recs = byDay[it][d] || [];
+      const status = `<div><i class="c ${c.st}">${sym[c.st]}</i> ${esc((label[st] || "").replace(/^\S+ /, ""))}${c.st === "cov" ? "（免死抵掉）" : ""}</div>`;
+      const times = recs.map(r => `<div class="hint">${esc(shortTs(r[0]))}${r[3] && r[3] !== "已完成" ? `（${esc(r[3])}）` : ""}${r[1] !== n ? `（${esc(r[1])}）` : ""}
+        <button type="button" class="ghost sm" data-del='${esc(JSON.stringify([r[0], r[1], r[2], r[4] || ""]))}'>刪除</button></div>`).join("");
+      const canAdd = ["miss", "late", "cov", "nodata"].includes(c.st);   // 缺交、遲交的日子可以補登
+      return `<td style="white-space:normal">${status}${times}${canAdd ? `<button type="button" class="ghost sm" data-add="${d}" data-item="${esc(multi ? it : "")}" style="margin-top:4px">補登</button>` : ""}</td>`;
+    };
     $("admList").innerHTML = `<div class="stats" style="margin-bottom:12px">${[
-        ["已回報", t.ok], ["缺交", missAll], ["遲交", lateAll], ["用免死抵掉", t.limit ? `${t.cov} / ${t.limit}` : "—"],
-        S.exName ? [S.exName, t.free] : null, [`本月${S.fineName}${multi ? `（${ITEM}）` : ""}`, `$${t.owe}${t.manual ? "（手算）" : ""}`],
+        ["已回報", t.ok],
+        ...(multi ? ITEMS.map(it => [`${it}沒做`, per[it].missAll + per[it].lateAll]) : [["缺交", t.missAll], ["遲交", t.lateAll]]),
+        ["用免死抵掉", t.limit ? `${t.cov} / ${t.limit}` : "—"],
+        S.exName ? [S.exName, t.free] : null, [`本月${S.fineName}`, `$${t.owe}${t.manual ? "（手算）" : ""}`],
       ].filter(Boolean).map(([k, v]) => `<div class="stat"><div class="k">${esc(k)}</div><div class="v" style="font-size:1.1rem">${v}</div></div>`).join("")}</div>
-      <div class="scroll"><table class="edit"><tr><th>日期</th><th>狀態</th><th>送出時間</th><th></th></tr>${cells.map(c => {
-        const st = c.st === "cov" ? c.was : c.st;
-        const recs = byDay[c.d] || [];
-        const status = `<i class="c ${c.st}">${{ ok: "✓", miss: "✗", late: "遲", cov: "抵", free: "免", now: "…", na: "·", nodata: "?" }[c.st]}</i> ${esc(label[st] || "")}${c.st === "cov" ? "（用免死抵掉）" : ""}`;
-        const times = recs.length ? recs.map(r => `<div>${esc(r[0])}${r[3] && r[3] !== "已完成" ? `（${esc(r[3])}）` : ""}${r[1] !== n ? `（${esc(r[1])}）` : ""}
-          <button type="button" class="ghost sm" data-del='${esc(JSON.stringify([r[0], r[1], r[2], r[4] || ""]))}'>刪除</button></div>`).join("") : `<span class="hint">—</span>`;
-        const canAdd = ["miss", "late", "cov", "nodata"].includes(c.st);   // 缺交、遲交的日子可以補登
-        return `<tr><td>${md(c.d)}（${wkOf(c.d)}）</td><td>${status}</td><td style="white-space:normal">${times}</td>
-          <td>${canAdd ? `<button type="button" class="ghost sm" data-add="${c.d}">補登</button>` : ""}</td></tr>`;
-      }).join("")}</table></div>`;
+      <div class="scroll"><table class="edit"><tr><th>日期</th>${ITEMS.map(it => `<th>${multi ? esc(it) : "狀態"}</th>`).join("")}</tr>${days.map(d =>
+        `<tr><td style="white-space:nowrap">${md(d)}（${wkOf(d)}）</td>${ITEMS.map(it => cellHtml(it, d)).join("")}</tr>`).join("")}</table></div>`;
   };
   if (admPick) listFor(admPick);
   $("admNames").onclick = e => {
@@ -1129,7 +1139,7 @@ function secReports() {
       if (!confirm(`確定刪除 ${name} ${ts}${item ? ` ${item}` : ""} 這筆回報？`)) return;
       saving(() => api({ action: "deleteReport", ts, name, date, item }), "已刪除");
     } else if (add) {
-      const date = add.dataset.add, item = multi ? ITEM : "";
+      const date = add.dataset.add, item = add.dataset.item || "";
       if (!confirm(`幫 ${admPick} 補登 ${md(date)}（${wkOf(date)}）${item}？`)) return;
       saving(() => api({ action: "addReport", name: admPick, date, item }), `已補登 ${admPick} ${md(date)} ${item}`);
     }
