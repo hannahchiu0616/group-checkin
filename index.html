@@ -65,6 +65,12 @@ td.zero{color:var(--ok);font-weight:700}
 .c.now{background:var(--none-bg);color:var(--accent);outline:1px dashed var(--accent);outline-offset:-1px}
 .c.nodata{background:var(--none-bg);color:var(--muted)}
 /* 每月定課的紀錄表：窄一點、每格寫字 */
+.owe-alert{margin-top:12px;padding:12px 14px;border-radius:10px;background:var(--bad-bg);color:var(--bad);font-weight:700;font-size:1.1rem;text-align:center;line-height:1.5}
+.owe-alert small{display:block;font-size:.8rem;font-weight:500}
+.pay-names button{white-space:normal;line-height:1.3}
+.pay-names button small{display:block;font-size:.75rem;font-weight:700;color:var(--bad)}
+.pay-names button.settled{opacity:.35}
+.pay-names button.settled small{color:var(--muted);font-weight:500}
 .paid{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer}
 .paid input{width:18px;height:18px;margin:0}
 .paid-ok{color:var(--ok);font-weight:600}
@@ -220,11 +226,18 @@ button.sm{padding:4px 9px;font-size:.85rem}
     <div class="seg" id="kindSeg">
       <button type="button" data-kind="daily">每日回報</button>
       <button type="button" data-kind="class" id="kindClass">請假回報</button>
+      <button type="button" data-kind="pay" id="kindPay" hidden>繳款回報</button>
     </div>
-    <div class="field">
+    <div class="field" id="nameField">
       <span class="lbl">名字</span>
       <div class="names" id="nameButtons"></div>
       <input id="reportNew" placeholder="輸入你的名字" maxlength="20" hidden>
+      <div class="owe-alert" id="oweAlert" hidden></div>
+    </div>
+    <!-- 繳款回報：只有管理員登入後看得到 -->
+    <div data-kind-panel="pay" hidden>
+      <p class="hint" style="margin:12px 0 8px">點名字記錄已繳。名字下面是還沒繳的金額（只算已經結束的月份）；變淡的是已繳清或不用繳。要取消已繳，到「本月結算」把勾拿掉。</p>
+      <div class="names pay-names" id="payList"></div>
     </div>
     <div data-kind-panel="daily">
       <div class="field" id="itemField" hidden>
@@ -588,6 +601,26 @@ function monthlyStatus(m, mi, ym) {
   return calToday() <= due ? "now" : "miss";
 }
 
+/* ---------- 繳款 ---------- */
+// 試算表「繳費」分頁：名字|月份 → 繳交日期
+function paidMap() {
+  const o = {};
+  for (const r of (DATA && DATA["繳費"]) || []) o[r[0] + "|" + r[1]] = normDate(r[2]) || r[2] || "已繳";
+  return o;
+}
+const monthTotal = (m, ym) => (SETTINGS.items.length > 1 || SETTINGS.monthly.length) ? monthAll(m, ym) : monthDetail(m, ym);
+// 還沒繳的罰款：只算已經結束的月份（這個月還在累計，下個月才算要繳）
+function unpaidOf(m) {
+  const cur = nowDay().slice(0, 7), paid = paidMap(), list = [];
+  for (const ym of MODEL.months) {
+    if (ym >= cur) continue;
+    const owe = monthTotal(m, ym).owe;
+    if (owe > 0 && !paid[m.name + "|" + ym]) list.push({ ym, owe });
+  }
+  return { total: list.reduce((a, x) => a + x.owe, 0), list };
+}
+const oweText = u => u.list.map(x => `${+x.ym.slice(5)} 月 $${x.owe.toLocaleString()}`).join("、");
+
 /* ---------- 畫面 ---------- */
 function renderStatic() {
   const S = SETTINGS;
@@ -614,6 +647,7 @@ function renderStatic() {
     ["na", "·", "不計算"],
   ].filter(Boolean).map(([c, s, t]) => `<span><i class="c ${c}">${s}</i>${t}</span>`).join("");
   LEGEND = $("legend").innerHTML;
+  updatePayKind();
   // 好幾個打卡項目：月份旁邊切換要看哪一項的紀錄（每月定課也在這裡切）
   const allItems = S.items.concat(S.monthly.map(mi => mi.name));
   if (MVIEW && !S.monthly.some(mi => mi.name === MVIEW)) MVIEW = "";
@@ -784,6 +818,7 @@ function setKind(k) {
   reportKind = k;
   document.querySelectorAll("[data-kind]").forEach(b => b.setAttribute("aria-selected", b.dataset.kind === k));
   document.querySelectorAll("[data-kind-panel]").forEach(p => p.hidden = p.dataset.kindPanel !== k);
+  $("nameField").hidden = $("reportBtn").hidden = k === "pay";   // 繳款回報直接點名字，不用選名字、送出
   $("reportBtn").textContent = k === "class" ? `送出${SETTINGS.exName || ""}回報` : "已完成 ✅ 送出回報";
   reportMsg("");
   updateReport();
@@ -794,6 +829,18 @@ document.querySelectorAll("[data-kind]").forEach(b => b.onclick = () => setKind(
 function updateReport() {
   $("reportNew").hidden = pickedName !== NEW_NAME;
   const n = reportName(), S = SETTINGS;
+  $("oweAlert").hidden = true;
+  if (reportKind === "pay") {
+    $("reportMine").innerHTML = ""; $("reportHint").textContent = ""; $("reportList").hidden = true;
+    renderPayList();
+    return;
+  }
+  // 每日回報：還沒繳清功德金的人，點名字就跳出醒目的提醒
+  const me = reportKind === "daily" && n && MODEL && MODEL.members.find(x => x.name === n), owe = me ? unpaidOf(me) : null;
+  if (owe && owe.total) {
+    $("oweAlert").innerHTML = `請儘快繳交${esc(S.fineName)} $${owe.total.toLocaleString()}<small>${esc(oweText(owe))}</small>`;
+    $("oweAlert").hidden = false;
+  }
   if (reportKind === "class") {
     $("reportMine").innerHTML = "";
     const a = $("classFrom").value, b = $("classTo").value;
@@ -821,6 +868,35 @@ function updateReport() {
   }
   $("reportHint").textContent = hint;
   showMine(n);
+}
+// 繳款回報（管理員）：每個名字下面是還沒繳的金額，已繳清的變淡；點名字記錄已繳
+function renderPayList() {
+  if (!MODEL) return;
+  const list = MODEL.members.map(m => ({ m, u: unpaidOf(m) })).filter(({ m, u }) => u.total || !MODEL.exitedBefore(m, MODEL.current));
+  $("payList").innerHTML = list.map(({ m, u }) => `<button type="button" data-pay="${esc(m.name)}" class="${u.total ? "" : "settled"}" title="${esc(u.total ? oweText(u) : "沒有要繳的")}">${esc(m.name)}<small>${u.total ? `$${u.total.toLocaleString()}` : "已繳清"}</small></button>`).join("") ||
+    `<p class="hint">還沒有成員</p>`;
+}
+$("payList").onclick = async e => {
+  const b = e.target.closest("[data-pay]");
+  if (!b) return;
+  const m = MODEL.members.find(x => x.name === b.dataset.pay), u = unpaidOf(m);
+  if (!u.total) return reportMsg(`${esc(m.name)} 沒有要繳的${esc(SETTINGS.fineName)}`);
+  if (!confirm(`${m.name} 繳交${SETTINGS.fineName} $${u.total.toLocaleString()}？\n（${oweText(u)}）`)) return;
+  b.disabled = true;
+  reportMsg("記錄中…");
+  try {
+    for (const x of u.list) await api({ action: "setPaid", name: m.name, month: x.ym, paid: true });
+    reportMsg(`✅ 已記錄 ${esc(m.name)} 繳交 $${u.total.toLocaleString()}`, "ok");
+    await load();
+  } catch (err) {
+    reportMsg(`沒有存到：${esc(err.message)}`, "err");
+    b.disabled = false;
+  }
+};
+// 繳款回報只給登入的管理員
+function updatePayKind() {
+  $("kindPay").hidden = !TOKEN || OWNER_MODE;
+  if ($("kindPay").hidden && reportKind === "pay") setKind("daily");
 }
 $("itemButtons").onclick = e => {
   const b = e.target.closest("[data-item]");
@@ -950,6 +1026,7 @@ function showLoginState() {
   if (OWNER_MODE) $("ownerPanel").hidden = !inn; else $("adminPanel").hidden = !inn;
   if (inn) onLogin();
   if (MODEL && !OWNER_MODE) render();   // 本月結算的「繳交」欄：登入後可以勾、登出後只能看
+  updatePayKind();
 }
 // 本月結算：管理員勾／取消「已繳」
 $("summaryTable").onchange = async e => {
