@@ -675,17 +675,19 @@ function render() {
   const tip = { ok: "已回報", miss: "缺交", late: "遲交", cov: "用免死次數抵掉", free: `${S.exName}免除`, now: "計算中", na: "不計算", nodata: "沒有資料" };
   const mi = MVIEW && S.monthly.find(x => x.name === MVIEW);
   if (mi) {
-    // 每月定課：每個人一列、每個月一欄。最多 12 期（含現在進行中的這期），更早的不顯示（試算表裡還在）；
-    // 還沒開始計算的月份（每個人都是「不計算」）也不顯示，所以一開始只有一欄，每個月多一欄
-    const cyc = monthlyCycle(mi);
-    let months = [];
-    for (let i = 11; i >= 0; i--) { const x = fromKey(cyc + "-01"); x.setMonth(x.getMonth() - i); months.push(key(x).slice(0, 7)); }
-    while (months.length > 1 && ROWS.every(({ m }) => monthlyStatus(m, mi, months[0]) === "na")) months.shift();
+    // 每月定課：每個人一列、每個月一欄，固定顯示 12 期。
+    // 從第一個有在計算的月份開始（例如 12 月 → 顯示 12 月到隔年 11 月，還沒到的月份留白）；
+    // 現在這期超過第 12 欄時，整排往後移，更早的不顯示（試算表裡還在）
+    const cyc = monthlyCycle(mi), addM = (ym, n) => { const x = fromKey(ym + "-01"); x.setMonth(x.getMonth() + n); return key(x).slice(0, 7); };
+    let first = addM(cyc, -11);
+    while (first < cyc && ROWS.every(({ m }) => monthlyStatus(m, mi, first) === "na")) first = addM(first, 1);
+    const months = Array.from({ length: 12 }, (_, i) => addM(first, i));
     const word = { ok: "已完成", miss: "沒做", now: "進行中", na: "" };   // 不計算只顯示「·」，比較不吵
     $("grid").classList.add("mview");
     document.querySelector('[data-panel="daily"] .month-note').hidden = true;
     $("grid").innerHTML = `<tr><th class="name">成員</th>${months.map(y => `<th>${+y.slice(5)} 月<br><small>${md(monthlyDue(mi, y))} 前</small></th>`).join("")}</tr>` +
-      ROWS.map(({ m }) => `<tr><td class="name">${esc(m.name)}</td>${months.map(y => { const st = monthlyStatus(m, mi, y);
+      ROWS.map(({ m }) => `<tr><td class="name">${esc(m.name)}</td>${months.map(y => { if (y > cyc) return `<td></td>`;   // 還沒到的月份留白
+        const st = monthlyStatus(m, mi, y);
         return `<td><span class="mpill ${st}" title="${+y.slice(5)} 月 ${MTIP[st]}">${MSYM[st]} ${word[st]}</span></td>`; }).join("")}</tr>`).join("");
     $("legend").innerHTML = `<span>${esc(mi.name)}：每月 ${mi.day} 號晚上 12 點前打卡一次</span>` +
       [["ok", "✓", "已完成"], ["miss", "✗", `沒做（罰 ${mi.fine} 元）`], ["now", "…", "進行中（還沒到期限）"], ["na", "·", "不計算"]]
