@@ -64,6 +64,15 @@ td.zero{color:var(--ok);font-weight:700}
 .c.na{background:var(--none-bg);color:var(--muted);opacity:.6;border:1px solid var(--line)}
 .c.now{background:var(--none-bg);color:var(--accent);outline:1px dashed var(--accent);outline-offset:-1px}
 .c.nodata{background:var(--none-bg);color:var(--muted)}
+/* 每月定課的紀錄表：窄一點、每格寫字 */
+.grid.mview{width:auto}
+.grid.mview th,.grid.mview td{padding:7px 12px;border-bottom:1px solid var(--line)}
+.grid.mview th.name,.grid.mview td.name{padding-right:28px}
+.mpill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.8rem;font-weight:600;white-space:nowrap}
+.mpill.ok{background:var(--ok-bg);color:var(--ok)}
+.mpill.miss{background:var(--bad-bg);color:var(--bad)}
+.mpill.now{background:var(--none-bg);color:var(--accent);outline:1px dashed var(--accent);outline-offset:-1px}
+.mpill.na{background:var(--none-bg);color:var(--muted)}
 .legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:.85rem;color:var(--muted);margin-top:12px;align-items:center}
 .legend > span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .legend .c{width:22px;height:22px;line-height:22px;font-size:.72rem;flex:none}
@@ -666,15 +675,20 @@ function render() {
   const tip = { ok: "已回報", miss: "缺交", late: "遲交", cov: "用免死次數抵掉", free: `${S.exName}免除`, now: "計算中", na: "不計算", nodata: "沒有資料" };
   const mi = MVIEW && S.monthly.find(x => x.name === MVIEW);
   if (mi) {
-    // 每月定課：每個人一列、每個月一欄
-    const months = MODEL.months;
-    $("grid").innerHTML = `<tr><th class="name">成員</th>${months.map(y => `<th>${+y.slice(5)} 月<br><small>${md(monthlyDue(mi, y))}前</small></th>`).join("")}</tr>` +
+    // 每月定課：每個人一列、每個月一欄（含現在進行中的這一期，最多看最近 6 期）
+    const cyc = monthlyCycle(mi);
+    const months = [...new Set(MODEL.months.concat(cyc))].sort().slice(-6);
+    const word = { ok: "已完成", miss: "沒做", now: "進行中", na: "不計算" };
+    $("grid").classList.add("mview");
+    document.querySelector('[data-panel="daily"] .month-note').hidden = true;
+    $("grid").innerHTML = `<tr><th class="name">成員</th>${months.map(y => `<th>${+y.slice(5)} 月<br><small>${md(monthlyDue(mi, y))} 前</small></th>`).join("")}</tr>` +
       ROWS.map(({ m }) => `<tr><td class="name">${esc(m.name)}</td>${months.map(y => { const st = monthlyStatus(m, mi, y);
-        return `<td><i class="c ${st}" title="${+y.slice(5)} 月 ${MTIP[st]}">${MSYM[st]}</i></td>`; }).join("")}</tr>`).join("");
+        return `<td><span class="mpill ${st}" title="${+y.slice(5)} 月 ${MTIP[st]}">${MSYM[st]} ${word[st]}</span></td>`; }).join("")}</tr>`).join("");
     $("legend").innerHTML = `<span>${esc(mi.name)}：每月 ${mi.day} 號晚上 12 點前打卡一次</span>` +
-      [["ok", "✓", "已完成"], ["miss", "✗", `沒做（罰 ${mi.fine} 元）`], ["now", "…", "還沒到期限"], ["na", "·", "不計算"]]
+      [["ok", "✓", "已完成"], ["miss", "✗", `沒做（罰 ${mi.fine} 元）`], ["now", "…", "進行中（還沒到期限）"], ["na", "·", "不計算"]]
         .map(([c, s, t]) => `<span><i class="c ${c}">${s}</i>${t}</span>`).join("");
   } else {
+    $("grid").classList.remove("mview");
     $("grid").innerHTML = `<tr><th class="name">成員</th>${days.map(d => `<th>${+d.slice(8)}<br><small>${wkOf(d)}</small></th>`).join("")}</tr>` +
       ROWS.map(({ m, g }) => `<tr><td class="name">${esc(m.name)}</td>${g.cells.map(c =>
         `<td><i class="c ${c.st}" title="${md(c.d)} ${tip[c.st]}${c.was === "late" ? "（遲交）" : ""}">${sym[c.st]}</i></td>`).join("")}</tr>`).join("");
