@@ -73,6 +73,8 @@ td.zero{color:var(--ok);font-weight:700}
 .pay-names button.settled[aria-pressed="true"]{opacity:1}
 .pay-names button[aria-pressed="true"] small{color:#fff}
 .pay-names button.settled small{color:var(--muted);font-weight:500}
+.sum-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.sum-head h2{margin:0}
 .paid{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer}
 .paid input{width:18px;height:18px;margin:0}
 .paid-ok{color:var(--ok);font-weight:600}
@@ -280,7 +282,7 @@ button.sm{padding:4px 9px;font-size:.85rem}
   <section class="panel" data-panel="summary" hidden>
   <div class="stats" id="stats"></div>
   <div class="card" style="margin-top:16px">
-    <h2 id="sumTitle">本月結算</h2>
+    <div class="sum-head"><h2 id="sumTitle">本月結算</h2><button type="button" class="ghost sm" id="copySum">📋 複製資訊</button></div>
     <p class="hint" id="sumHint" style="margin:-6px 0 8px">要看以前的月份，改最上面的「月份」。</p>
     <p class="hint month-note" hidden></p>
     <div class="scroll tall"><table id="summaryTable"></table></div>
@@ -1055,6 +1057,24 @@ function showLoginState() {
   if (inn) onLogin();
   updatePayKind();   // 繳款回報只給登入的管理員
 }
+// 本月結算：複製這個月每個人的金額（有罰款的照名單順序在前，$0 的放最下面）
+$("copySum").onclick = async () => {
+  const ym = $("month").value;
+  const owe = ROWS.filter(r => r.t.owe), zero = ROWS.filter(r => !r.t.owe);
+  const text = [`${+ym.slice(5)} 月`, ...owe.map(r => `${r.m.name} $${r.t.owe}`), ...zero.map(r => `${r.m.name} $0｜全勤，優秀！`)].join("\n");
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {
+    // 有些瀏覽器不給直接寫剪貼簿：改用選取文字複製
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch (e2) {}
+    ta.remove();
+  }
+  const b = $("copySum");
+  b.textContent = ok ? "✓ 已複製" : "複製失敗";
+  setTimeout(() => { b.textContent = "📋 複製資訊"; }, 2000);
+};
 // Email 在管理員名單上就直接登入
 $("loginBtn").onclick = async () => {
   const email = $("loginEmail").value.trim();
