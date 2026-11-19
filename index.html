@@ -411,9 +411,9 @@ function readSettings(d) {
     keepMonths: int(s["保留月數"], 0),
     // 打卡項目：任務名稱用「、」隔開就是好幾項，每項分開算、分開罰
     items: (s["任務名稱"] || "任務").split(/[、,，\/]+/).map(x => x.trim()).filter(Boolean),
-    // 每月定課：一行一項「名稱|每月幾號前|罰款」，例如「痛的參解|5|500」
+    // 每月定課：一行一項「名稱|每月幾號前|罰款|從哪天開始算」，例如「痛的參解|5|500|2026-11-06」（開始日可以空白）
     monthly: String(s["每月定課"] || "").split(/\n/).map(l => l.split("|").map(x => x.trim()))
-      .filter(([n]) => n).map(([name, d, f]) => ({ name, day: Math.min(28, Math.max(1, int(d, 5))), fine: int(f, 0) })),
+      .filter(([n]) => n).map(([name, d, f, st]) => ({ name, day: Math.min(28, Math.max(1, int(d, 5))), fine: int(f, 0), start: normDate(st) })),
     members: lines(d["成員"]), exemptions: lines(d["免除"]), pauses: lines(d["退出休息"]), overrides: lines(d["手算調整"]),
   };
 }
@@ -600,6 +600,7 @@ const monthlyRecs = (name, item, ym) => (DATA["回報"] || []).filter(r =>
 function monthlyStatus(m, mi, ym) {
   const due = monthlyDue(mi, ym), start = normDate(SETTINGS.startDate);
   if (start && due < start) return "na";                                                           // 還沒開始計算
+  if (mi.start && due < mi.start) return "na";                                                     // 這項每月定課還沒開始算（期限在開始日之前的那期不算）
   if (!m.periods.some(p => (!p.from || due >= p.from) && (!p.to || due <= p.to))) return "na";   // 期限那天還不是成員
   if (MODEL.pauses.some(p => p.name === m.name && due >= p.from && (!p.back || due < p.back))) return "na";   // 退出／休息中
   if (monthlyRecs(m.name, mi.name, ym).length) return "ok";
@@ -1194,6 +1195,8 @@ function secSettings() {
   const monthRow = mi => `<div class="task-row month-row"><input class="m-name" maxlength="20" value="${esc(mi.name)}" placeholder="例如：痛的參解">
     <span class="hint" style="white-space:nowrap">每月</span><input class="m-day" type="number" min="1" max="28" value="${mi.day}" style="width:4em;flex:none">
     <span class="hint" style="white-space:nowrap">號前，罰</span><input class="m-fine" type="number" min="0" value="${mi.fine}" style="width:5em;flex:none">
+    <span class="hint" style="white-space:nowrap">從</span><input class="m-start" type="date" value="${esc(mi.start || "")}" style="width:auto;flex:none" title="這天以後的期限才開始算；空白＝照開始計算日">
+    <span class="hint" style="white-space:nowrap">起算</span>
     <button type="button" class="ghost sm" data-del-month>刪除</button></div>`;
   $("monthList").innerHTML = SETTINGS.monthly.map(monthRow).join("");
   $("addMonth").onclick = () => {
@@ -1212,9 +1215,10 @@ function secSettings() {
       name: r.querySelector(".m-name").value.replace(/[、,，\/|\n]/g, " ").trim(),
       day: Math.min(28, Math.max(1, parseInt(r.querySelector(".m-day").value, 10) || 5)),
       fine: Math.max(0, parseInt(r.querySelector(".m-fine").value, 10) || 0),
+      start: r.querySelector(".m-start").value,
     })).filter(x => x.name);
     if (mons.some(x => tasks.includes(x.name))) return setMsg("secMsg", "每月定課的名稱不能和每天的定課一樣", "err");
-    settings["每月定課"] = mons.map(x => `${x.name}|${x.day}|${x.fine}`).join("\n");
+    settings["每月定課"] = mons.map(x => `${x.name}|${x.day}|${x.fine}${x.start ? "|" + x.start : ""}`).join("\n");
     saving(() => api({ action: "saveSettings", settings }));
   };
 }
