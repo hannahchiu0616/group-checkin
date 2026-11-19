@@ -18,7 +18,7 @@ const TABS = {
 const PUBLIC_TABS = ["成員", "回報", "免除", "退出休息", "手算調整"];   // 大家都看得到（管理員、修改紀錄不公開）
 const EDIT_TABS = ["成員", "免除", "退出休息", "手算調整", "管理員"];   // 管理頁可以整份修改的分頁
 const SETTING_KEYS = ["名稱", "副標題", "任務名稱", "罰款名稱", "開始計算日", "每次罰款", "每月免死次數", "免死從",
-  "切換時間", "免除名稱", "免除提前天數", "保留月數", "規則說明"];
+  "切換時間", "免除名稱", "免除提前天數", "保留月數", "規則說明", "每月定課"];   // 每月定課：一行一項「名稱|每月幾號前|罰款」
 
 /* ---------- 共用 ---------- */
 const props = () => PropertiesService.getScriptProperties();
@@ -91,9 +91,12 @@ function prune(ss) {
   return all.length - keep.length;
 }
 
-// 打卡項目：設定的「任務名稱」用「、」隔開就是好幾項
+// 打卡項目：設定的「任務名稱」用「、」隔開就是好幾項，再加上每月定課的名稱
 function itemsOf(ss) {
-  return String(settingsOf(ss)["任務名稱"] || "任務").split(/[、,，\/]+/).map(x => x.trim()).filter(Boolean);
+  const s = settingsOf(ss);
+  const daily = String(s["任務名稱"] || "任務").split(/[、,，\/]+/).map(x => x.trim()).filter(Boolean);
+  const monthly = String(s["每月定課"] || "").split(/\n/).map(l => l.split("|")[0].trim()).filter(Boolean);
+  return daily.concat(monthly);
 }
 
 function ensureMember(ss, name, date) {

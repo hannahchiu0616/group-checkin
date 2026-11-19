@@ -104,6 +104,7 @@ a{color:var(--accent)}
 .task-row{display:flex;gap:8px;align-items:center;margin-top:8px;max-width:420px}
 .task-no{flex:none;width:2em;font-weight:700;color:var(--muted)}
 .task-row input{flex:1;min-width:0}
+.month-row{max-width:520px;flex-wrap:wrap}
 .mine{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .mine span{text-align:center;font-size:.75rem;color:var(--muted)}
 .msg{margin:10px 0 0}
@@ -246,6 +247,11 @@ button.sm{padding:4px 9px;font-size:.85rem}
     <div class="scroll tall"><table class="grid" id="grid"></table></div>
     <div class="legend" id="legend"></div>
   </div>
+  <div class="card" id="monthlyCard" hidden>
+    <h2>每月定課</h2>
+    <p class="hint" id="monthlyHint" style="margin:-6px 0 10px"></p>
+    <div class="scroll"><table id="monthlyTable"></table></div>
+  </div>
   </section>
 
   <section class="panel" data-panel="summary" hidden>
@@ -379,6 +385,9 @@ function readSettings(d) {
     keepMonths: int(s["保留月數"], 0),
     // 打卡項目：任務名稱用「、」隔開就是好幾項，每項分開算、分開罰
     items: (s["任務名稱"] || "任務").split(/[、,，\/]+/).map(x => x.trim()).filter(Boolean),
+    // 每月定課：一行一項「名稱|每月幾號前|罰款」，例如「痛的參解|5|500」
+    monthly: String(s["每月定課"] || "").split(/\n/).map(l => l.split("|").map(x => x.trim()))
+      .filter(([n]) => n).map(([name, d, f]) => ({ name, day: Math.min(28, Math.max(1, int(d, 5))), fine: int(f, 0) })),
     members: lines(d["成員"]), exemptions: lines(d["免除"]), pauses: lines(d["退出休息"]), overrides: lines(d["手算調整"]),
   };
 }
@@ -535,9 +544,40 @@ function monthAll(m, ym) {
   for (const it of SETTINGS.items) per[it] = monthDetail(m, ym, MODELS[it], true);
   const L = Object.values(per), sum = k => L.reduce((a, t) => a + t[k], 0);
   const t = { per, ok: sum("ok"), missAll: sum("missAll"), lateAll: sum("lateAll"), cov: sum("cov"), limit: sum("limit"),
-    free: per[SETTINGS.items[0]].free, owe: sum("owe"), cells: L.flatMap(x => x.cells) };
+    free: per[SETTINGS.items[0]].free, owe: sum("owe"), cells: L.flatMap(x => x.cells), monthly: {}, mMiss: 0 };
+  // 每月定課：期限前沒打卡就罰該項的金額
+  for (const mi of SETTINGS.monthly) {
+    const st = monthlyStatus(m, mi, ym);
+    t.monthly[mi.name] = st;
+    if (st === "ok") t.ok++;
+    if (st === "miss") { t.mMiss++; t.owe += mi.fine; }
+  }
   applyOverride(t, m, ym);
   return t;
+}
+
+/* ---------- 每月定課（例如每月 5 號晚上 12 點前要做一次） ---------- */
+const calToday = () => key(new Date());   // 實際的日曆日期（每月定課不用中午切換）
+const MSYM = { ok: "✓", miss: "✗", now: "…", na: "·" }, MTIP = { ok: "已完成", miss: "沒做（罰款）", now: "還沒到期限", na: "不計算" };
+const monthlyDue = (mi, ym) => `${ym}-${pad(mi.day)}`;
+// 現在打卡算哪一期：期限（含當天）前算這個月，過了就算下個月
+function monthlyCycle(mi, today = calToday()) {
+  if (+today.slice(8) <= mi.day) return today.slice(0, 7);
+  const d = fromKey(today.slice(0, 7) + "-01");
+  d.setMonth(d.getMonth() + 1);
+  return key(d).slice(0, 7);
+}
+const cleanRowName = r => String(r[1] || "").replace(/\s*[（(].*$/, "").trim();
+// 這個人這一期的回報（每月定課的回報，日期欄寫的是那一期的期限日）
+const monthlyRecs = (name, item, ym) => (DATA["回報"] || []).filter(r =>
+  cleanRowName(r) === name && String(r[4] || "").trim() === item && normDate(r[2]).slice(0, 7) === ym);
+function monthlyStatus(m, mi, ym) {
+  const due = monthlyDue(mi, ym), start = normDate(SETTINGS.startDate);
+  if (start && due < start) return "na";                                                           // 還沒開始計算
+  if (!m.periods.some(p => (!p.from || due >= p.from) && (!p.to || due <= p.to))) return "na";   // 期限那天還不是成員
+  if (MODEL.pauses.some(p => p.name === m.name && due >= p.from && (!p.back || due < p.back))) return "na";   // 退出／休息中
+  if (monthlyRecs(m.name, mi.name, ym).length) return "ok";
+  return calToday() <= due ? "now" : "miss";
 }
 
 /* ---------- 畫面 ---------- */
@@ -568,9 +608,11 @@ function renderStatic() {
   // 好幾個打卡項目：月份旁邊切換要看哪一項的紀錄
   $("itemChips").hidden = S.items.length < 2;
   $("itemChips").innerHTML = S.items.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${it === ITEM}">${esc(it)}</button>`).join("");
-  $("itemField").hidden = S.items.length < 2;
-  pickedItems = pickedItems.filter(it => S.items.includes(it));
-  $("itemButtons").innerHTML = S.items.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${pickedItems.includes(it)}">${esc(it)}</button>`).join("");
+  const allItems = S.items.concat(S.monthly.map(mi => mi.name));
+  $("itemField").hidden = allItems.length < 2;
+  pickedItems = pickedItems.filter(it => allItems.includes(it));
+  $("itemButtons").innerHTML = S.items.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${pickedItems.includes(it)}">${esc(it)}</button>`).join("") +
+    S.monthly.map(mi => `<button type="button" data-item="${esc(mi.name)}" aria-pressed="${pickedItems.includes(mi.name)}" title="每月 ${mi.day} 號前一次">${esc(mi.name)}<small style="display:block;font-weight:400;font-size:.7rem">每月一次</small></button>`).join("");
 }
 $("itemChips").onclick = e => {
   const b = e.target.closest("[data-item]");
@@ -586,7 +628,7 @@ function render() {
   const days = monthDays(ym), S = SETTINGS;
   // 退出的人：退出那個月還顯示，下個月起拿掉；整個月都不計算又沒有金額的人不顯示；順序照成員名單
   // t：全部項目合計（本月結算）；g：目前選的項目（回報紀錄表格）
-  const multi = S.items.length > 1;
+  const multi = S.items.length > 1 || S.monthly.length > 0;
   ROWS = MODEL.members.filter(m => !MODEL.exitedBefore(m, ym + "-01"))
     .map(m => { const t = multi ? monthAll(m, ym) : monthDetail(m, ym); return { m, t, g: multi ? t.per[ITEM] : t }; })
     .filter(r => r.t.owe || r.t.cells.some(c => c.st !== "na"));
@@ -599,7 +641,7 @@ function render() {
   document.querySelectorAll(".month-note").forEach(el => { el.innerHTML = note; el.hidden = !note; });
 
   const sum = ROWS.reduce((a, r) => a + r.t.owe, 0);
-  const perfect = ROWS.filter(r => r.t.missAll + r.t.lateAll === 0).length;
+  const perfect = ROWS.filter(r => r.t.missAll + r.t.lateAll + (r.t.mMiss || 0) === 0).length;
   $("stats").innerHTML = [
     [`本月${S.fineName}合計`, `$${sum.toLocaleString()}`, true],
     ["本月全勤人數", `${perfect} / ${ROWS.length}`],
@@ -609,8 +651,8 @@ function render() {
   const free = S.freePerMonth;
   if (multi) {
     // 好幾個項目：每項一欄「沒做」次數（缺交＋遲交），最後是全部項目加起來的金額
-    $("summaryTable").innerHTML = `<tr><th>成員</th>${S.items.map(it => `<th class="num">${esc(it)}沒做</th>`).join("")}${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}天數</th>` : ""}<th class="num">本月${esc(S.fineName)}</th></tr>` +
-      ROWS.map(({ m, t }) => `<tr><td>${esc(m.name)}</td>${S.items.map(it => `<td class="num">${t.per[it].missAll + t.per[it].lateAll}</td>`).join("")}
+    $("summaryTable").innerHTML = `<tr><th>成員</th>${S.items.map(it => `<th class="num">${esc(it)}沒做</th>`).join("")}${S.monthly.map(mi => `<th class="num">${esc(mi.name)}</th>`).join("")}${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}天數</th>` : ""}<th class="num">本月${esc(S.fineName)}</th></tr>` +
+      ROWS.map(({ m, t }) => `<tr><td>${esc(m.name)}</td>${S.items.map(it => `<td class="num">${t.per[it].missAll + t.per[it].lateAll}</td>`).join("")}${S.monthly.map(mi => `<td class="num"><i class="c ${t.monthly[mi.name]}" title="${esc(MTIP[t.monthly[mi.name]])}">${MSYM[t.monthly[mi.name]]}</i></td>`).join("")}
       ${free ? `<td class="num">${t.cov} / ${t.limit}</td>` : ""}${S.exName ? `<td class="num">${t.free}</td>` : ""}
       <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}${t.manual ? "（手算）" : ""}</td></tr>`).join("");
   } else
@@ -626,6 +668,15 @@ function render() {
   $("grid").innerHTML = `<tr><th class="name">成員</th>${days.map(d => `<th>${+d.slice(8)}<br><small>${wkOf(d)}</small></th>`).join("")}</tr>` +
     ROWS.map(({ m, g }) => `<tr><td class="name">${esc(m.name)}</td>${g.cells.map(c =>
       `<td><i class="c ${c.st}" title="${md(c.d)} ${tip[c.st]}${c.was === "late" ? "（遲交）" : ""}">${sym[c.st]}</i></td>`).join("")}</tr>`).join("");
+
+  // 每月定課：這個月每個人做了沒
+  $("monthlyCard").hidden = !S.monthly.length;
+  if (S.monthly.length) {
+    $("monthlyHint").textContent = S.monthly.map(mi => `${mi.name}：每月 ${mi.day} 號晚上 12 點前打卡一次，沒做罰 ${mi.fine} 元（這期期限 ${md(monthlyDue(mi, ym))}）`).join("；");
+    $("monthlyTable").innerHTML = `<tr><th>成員</th>${S.monthly.map(mi => `<th class="num">${esc(mi.name)}</th>`).join("")}</tr>` +
+      ROWS.map(({ m, t }) => `<tr><td>${esc(m.name)}</td>${S.monthly.map(mi => { const st = t.monthly[mi.name];
+        return `<td class="num"><i class="c ${st}" title="${esc(MTIP[st])}">${MSYM[st]}</i></td>`; }).join("")}</tr>`).join("");
+  }
 }
 
 async function load() {
@@ -638,7 +689,8 @@ async function load() {
     if (!d.ok) throw new Error(d.error || "讀不到資料");
     DATA = d;
     SETTINGS = readSettings(d);
-    const recs = toRecords(d["回報"] || []);
+    const mNames = SETTINGS.monthly.map(x => x.name);
+    const recs = toRecords(d["回報"] || []).filter(r => !mNames.includes(r.item));   // 每月定課另外算
     MODELS = {};
     for (const it of SETTINGS.items) MODELS[it] = build(recs, SETTINGS, SETTINGS.items.length > 1 ? it : "");
     if (!SETTINGS.items.includes(ITEM)) ITEM = SETTINGS.items[0];
@@ -724,6 +776,11 @@ function updateReport() {
     hint = `這次回報算 ${md(d)}（${wkOf(d)}），${md(addDays(d, 1))} ${cutLabel()} 前回報` +
       (n ? `。${n} 今天：${S.items.map(it => `${it}${done(it) ? " ✓" : " 還沒回報"}`).join("、")}` : "");
   } else if (n && MODEL?.byName[n]?.days[d] === "ok") hint = `${n} 已經回報過 ${md(d)}（${wkOf(d)}）了 ✓`;
+  // 每月定課：這一期（期限前）做了沒
+  for (const mi of S.monthly || []) {
+    const cyc = monthlyCycle(mi), done = n && monthlyRecs(n, mi.name, cyc).length;
+    hint += `。${mi.name}（${md(monthlyDue(mi, cyc))} 晚上 12 點前）${n ? (done ? " ✓ 這期已完成" : " 這期還沒回報") : ""}`;
+  }
   $("reportHint").textContent = hint;
   showMine(n);
 }
@@ -772,7 +829,7 @@ $("reportForm").onsubmit = async e => {
   e.preventDefault();
   const name = reportName(), S = SETTINGS;
   if (!name) return reportMsg("請選擇或輸入名字", "err");
-  let body, done;
+  let body, done, bodies;
   if (reportKind === "class") {
     const from = $("classFrom").value, to = $("classTo").value || from;
     const reason = $("classReason").value.trim();
@@ -782,11 +839,15 @@ $("reportForm").onsubmit = async e => {
     done = `${md(from)}～${md(to)} ${S.exName}已登記，${md(addDays(from, -S.exBefore))}～${md(to)} 免做${S.task}`;
   } else {
     const date = nowDay();
-    if (S.items.length > 1) {
+    if (S.items.length > 1 || S.monthly.length) {
       if (!pickedItems.length) return reportMsg("請選完成了哪幾項", "err");
       const items = S.items.filter(it => pickedItems.includes(it));   // 照設定的順序
-      body = { name, date, items };
-      done = `${md(date)}（${wkOf(date)}）${items.join("、")} 已完成`;
+      const mons = S.monthly.filter(mi => pickedItems.includes(mi.name));
+      // 每天的定課一筆；每月定課各一筆，日期寫這一期的期限日
+      bodies = (items.length ? [{ name, date, items }] : [])
+        .concat(mons.map(mi => ({ name, date: monthlyDue(mi, monthlyCycle(mi)), items: [mi.name] })));
+      done = [items.length ? `${md(date)}（${wkOf(date)}）${items.join("、")} 已完成` : "",
+        ...mons.map(mi => `${mi.name}（${md(monthlyDue(mi, monthlyCycle(mi)))} 那期）已完成`)].filter(Boolean).join("；");
     } else {
       body = { name, date };
       done = `${md(date)}（${wkOf(date)}）已完成`;
@@ -795,12 +856,15 @@ $("reportForm").onsubmit = async e => {
   $("reportBtn").disabled = true;
   reportMsg("送出中…");
   try {
-    const res = await fetch(API, { method: "POST", body: JSON.stringify({ g: G, ...body }) });
-    const r = await res.json();
-    if (!r.ok) throw new Error(r.error || "送出失敗");
+    bodies = bodies || [body];
+    for (const b of bodies) {
+      const res = await fetch(API, { method: "POST", body: JSON.stringify({ g: G, ...b }) });
+      const r = await res.json();
+      if (!r.ok) throw new Error(r.error || "送出失敗");
+    }
     reportMsg(`✅ 收到了！${esc(name)} ${done}`, "ok");
-    if (body.type === "class") $("classReason").value = "";
-    if (body.items) { pickedItems = []; $("itemButtons").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", "false")); }
+    if (bodies[0].type === "class") $("classReason").value = "";
+    if (bodies[0].items) { pickedItems = []; $("itemButtons").querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", "false")); }
     load();
   } catch (err) {
     reportMsg(`送出失敗：${esc(err.message)}，請再試一次`, "err");
@@ -946,6 +1010,10 @@ function secSettings() {
         <p class="hint" style="margin:0 0 4px">一欄一項，每項分開打卡、分開罰款。月中新增的項目，加入前的日子會算沒做，建議月初再加，或把開始計算日改成新增那天。刪掉或改名的項目，舊的紀錄就不再計算。</p>
         <div id="taskList"></div>
         <button type="button" class="ghost sm" id="addTask" style="margin-top:10px">＋ 新增一項</button></div>
+      <div class="set-group"><h3>每月定課</h3>
+        <p class="hint" style="margin:0 0 4px">一個月做一次的定課（例如痛的參解）：每月幾號晚上 12 點前要打卡，沒做罰多少。上個月期限隔天到這個月期限之間打卡都算這一期。請假不會免除每月定課。</p>
+        <div id="monthList"></div>
+        <button type="button" class="ghost sm" id="addMonth" style="margin-top:10px">＋ 新增每月定課</button></div>
       <div class="set-group"><h3>計算規則</h3>`) +
     `<div class="set-group"><h3>規則說明</h3><p class="hint" style="margin:0 0 6px">一行一條，會顯示在「回報紀錄」上面</p>
       <textarea data-k="規則說明" rows="6">${esc(s["規則說明"] || "")}</textarea></div>`;
@@ -959,6 +1027,17 @@ function secSettings() {
     [...$("taskList").querySelectorAll(".task-in")].pop().focus();
   };
   $("taskList").onclick = e => { const b = e.target.closest("[data-del-task]"); if (b) { b.closest(".task-row").remove(); renumber(); } };
+  // 每月定課：名稱、每月幾號前、罰款
+  const monthRow = mi => `<div class="task-row month-row"><input class="m-name" maxlength="20" value="${esc(mi.name)}" placeholder="例如：痛的參解">
+    <span class="hint" style="white-space:nowrap">每月</span><input class="m-day" type="number" min="1" max="28" value="${mi.day}" style="width:4em;flex:none">
+    <span class="hint" style="white-space:nowrap">號前，罰</span><input class="m-fine" type="number" min="0" value="${mi.fine}" style="width:5em;flex:none">
+    <button type="button" class="ghost sm" data-del-month>刪除</button></div>`;
+  $("monthList").innerHTML = SETTINGS.monthly.map(monthRow).join("");
+  $("addMonth").onclick = () => {
+    $("monthList").insertAdjacentHTML("beforeend", monthRow({ name: "", day: 5, fine: SETTINGS.fine || 0 }));
+    [...$("monthList").querySelectorAll(".m-name")].pop().focus();
+  };
+  $("monthList").onclick = e => { const b = e.target.closest("[data-del-month]"); if (b) b.closest(".month-row").remove(); };
   $("saveSettings").onclick = () => {
     const settings = {};
     $("adminSec").querySelectorAll("[data-k]").forEach(el => { settings[el.dataset.k] = el.value.trim(); });
@@ -966,6 +1045,13 @@ function secSettings() {
     const tasks = [...new Set([...$("taskList").querySelectorAll(".task-in")].map(i => i.value.replace(/[、,，\/]/g, " ").trim()).filter(Boolean))];
     if (!tasks.length) return setMsg("secMsg", "定課內容至少要有一項", "err");
     settings["任務名稱"] = tasks.join("、");
+    const mons = [...$("monthList").querySelectorAll(".month-row")].map(r => ({
+      name: r.querySelector(".m-name").value.replace(/[、,，\/|\n]/g, " ").trim(),
+      day: Math.min(28, Math.max(1, parseInt(r.querySelector(".m-day").value, 10) || 5)),
+      fine: Math.max(0, parseInt(r.querySelector(".m-fine").value, 10) || 0),
+    })).filter(x => x.name);
+    if (mons.some(x => tasks.includes(x.name))) return setMsg("secMsg", "每月定課的名稱不能和每天的定課一樣", "err");
+    settings["每月定課"] = mons.map(x => `${x.name}|${x.day}|${x.fine}`).join("\n");
     saving(() => api({ action: "saveSettings", settings }));
   };
 }
@@ -1077,7 +1163,8 @@ function secReports() {
   const ym = $("month").value, names = MODEL.members.map(m => m.name);
   const multi = SETTINGS.items.length > 1, ITEMS = SETTINGS.items;
   // 回報算哪一項（沒寫項目的算第一項；寫了已經刪掉的項目就不列）
-  const itemOfRow = r => { const it = String(r[4] || "").trim(); return !multi || !it ? ITEMS[0] : ITEMS.includes(it) ? it : null; };
+  const MON = SETTINGS.monthly, useAll = multi || MON.length > 0;
+  const itemOfRow = r => { const it = String(r[4] || "").trim(); return MON.some(mi => mi.name === it) ? null : !multi || !it ? ITEMS[0] : ITEMS.includes(it) ? it : null; };
   $("adminSec").innerHTML = `<h2>每個人的打卡紀錄（${ym.replace("-", " 年 ")} 月）</h2>
     <p class="hint" style="margin-bottom:10px">選一個人看他每一天的狀況${multi ? "，每項定課一欄" : ""}。打錯的回報可以刪除，缺交的日子可以補登（補登不算遲交）。要看別的月份，改上面的「月份」。</p>
     <div class="names" id="admNames">${names.map(n => `<button type="button" data-name="${esc(n)}" aria-pressed="${n === admPick}">${esc(n)}</button>`).join("")}</div>
@@ -1090,8 +1177,8 @@ function secReports() {
     if (!m) { $("admList").innerHTML = ""; return; }
     // 每項定課各自的明細，加上全部合計（手算調整蓋的是合計）
     const per = {};
-    for (const it of ITEMS) per[it] = monthDetail(m, ym, multi ? MODELS[it] : MODEL, multi);
-    const t = multi ? monthAll(m, ym) : per[ITEMS[0]];
+    for (const it of ITEMS) per[it] = monthDetail(m, ym, multi ? MODELS[it] : MODEL, useAll);
+    const t = useAll ? monthAll(m, ym) : per[ITEMS[0]];
     // 這個人這個月的每一筆回報，依「哪一項」「算哪一天」分好
     const byDay = {};
     for (const it of ITEMS) byDay[it] = {};
@@ -1118,11 +1205,19 @@ function secReports() {
     $("admList").innerHTML = `<div class="stats" style="margin-bottom:12px">${[
         ["已回報", t.ok],
         ...(multi ? ITEMS.map(it => [`${it}沒做`, per[it].missAll + per[it].lateAll]) : [["缺交", t.missAll], ["遲交", t.lateAll]]),
+        ...MON.map(mi => [mi.name, `${MSYM[t.monthly[mi.name]]} ${MTIP[t.monthly[mi.name]]}`]),
         ["用免死抵掉", t.limit ? `${t.cov} / ${t.limit}` : "—"],
         S.exName ? [S.exName, t.free] : null, [`本月${S.fineName}`, `$${t.owe}${t.manual ? "（手算）" : ""}`],
       ].filter(Boolean).map(([k, v]) => `<div class="stat"><div class="k">${esc(k)}</div><div class="v" style="font-size:1.1rem">${v}</div></div>`).join("")}</div>
       <div class="scroll"><table class="edit"><tr><th>日期</th>${ITEMS.map(it => `<th>${multi ? esc(it) : "狀態"}</th>`).join("")}</tr>${days.map(d =>
-        `<tr><td style="white-space:nowrap">${md(d)}（${wkOf(d)}）</td>${ITEMS.map(it => cellHtml(it, d)).join("")}</tr>`).join("")}</table></div>`;
+        `<tr><td style="white-space:nowrap">${md(d)}（${wkOf(d)}）</td>${ITEMS.map(it => cellHtml(it, d)).join("")}</tr>`).join("")}</table></div>` +
+      // 每月定課：這個月那一期
+      (MON.length ? `<h3 style="margin:18px 0 8px">每月定課</h3><div class="scroll"><table class="edit"><tr><th>定課</th><th>這期期限</th><th>狀態</th></tr>${MON.map(mi => {
+        const st = t.monthly[mi.name], due = monthlyDue(mi, ym), recs = monthlyRecs(n, mi.name, ym);
+        const times = recs.map(r => `<div class="hint">${esc(shortTs(r[0]))}${r[3] && r[3] !== "已完成" ? `（${esc(r[3])}）` : ""}
+          <button type="button" class="ghost sm" data-del='${esc(JSON.stringify([r[0], r[1], r[2], r[4] || ""]))}'>刪除</button></div>`).join("");
+        return `<tr><td>${esc(mi.name)}</td><td>${md(due)} 晚上 12 點</td><td style="white-space:normal"><div><i class="c ${st}">${MSYM[st]}</i> ${MTIP[st]}</div>${times}${st === "miss" ? `<button type="button" class="ghost sm" data-add="${due}" data-item="${esc(mi.name)}" style="margin-top:4px">補登</button>` : ""}</td></tr>`;
+      }).join("")}</table></div>` : "");
   };
   if (admPick) listFor(admPick);
   $("admNames").onclick = e => {
