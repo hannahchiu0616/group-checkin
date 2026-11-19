@@ -247,11 +247,6 @@ button.sm{padding:4px 9px;font-size:.85rem}
     <div class="scroll tall"><table class="grid" id="grid"></table></div>
     <div class="legend" id="legend"></div>
   </div>
-  <div class="card" id="monthlyCard" hidden>
-    <h2>每月定課</h2>
-    <p class="hint" id="monthlyHint" style="margin:-6px 0 10px"></p>
-    <div class="scroll"><table id="monthlyTable"></table></div>
-  </div>
   </section>
 
   <section class="panel" data-panel="summary" hidden>
@@ -332,7 +327,7 @@ const store = {
 };
 
 let DATA = null, SETTINGS = {}, MODEL = null, ROWS = [];
-let MODELS = {}, ITEM = "", pickedItems = [];   // 每個打卡項目一個計算模型；ITEM＝目前看哪一項；pickedItems＝回報時勾的項目
+let MODELS = {}, ITEM = "", pickedItems = [], MVIEW = "", LEGEND = "";   // MVIEW：回報紀錄正在看哪一項每月定課（空白＝看每天的定課）   // 每個打卡項目一個計算模型；ITEM＝目前看哪一項；pickedItems＝回報時勾的項目
 
 /* ---------- 每天的切換時間（預設中午 12:00） ---------- */
 function cutMs() {
@@ -605,10 +600,12 @@ function renderStatic() {
     ["nodata", "?", "沒有資料"],
     ["na", "·", "不計算"],
   ].filter(Boolean).map(([c, s, t]) => `<span><i class="c ${c}">${s}</i>${t}</span>`).join("");
-  // 好幾個打卡項目：月份旁邊切換要看哪一項的紀錄
-  $("itemChips").hidden = S.items.length < 2;
-  $("itemChips").innerHTML = S.items.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${it === ITEM}">${esc(it)}</button>`).join("");
+  LEGEND = $("legend").innerHTML;
+  // 好幾個打卡項目：月份旁邊切換要看哪一項的紀錄（每月定課也在這裡切）
   const allItems = S.items.concat(S.monthly.map(mi => mi.name));
+  if (MVIEW && !S.monthly.some(mi => mi.name === MVIEW)) MVIEW = "";
+  $("itemChips").hidden = allItems.length < 2;
+  $("itemChips").innerHTML = allItems.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${MVIEW ? it === MVIEW : it === ITEM}">${esc(it)}</button>`).join("");
   $("itemField").hidden = allItems.length < 2;
   pickedItems = pickedItems.filter(it => allItems.includes(it));
   $("itemButtons").innerHTML = S.items.map(it => `<button type="button" data-item="${esc(it)}" aria-pressed="${pickedItems.includes(it)}">${esc(it)}</button>`).join("") +
@@ -617,7 +614,9 @@ function renderStatic() {
 $("itemChips").onclick = e => {
   const b = e.target.closest("[data-item]");
   if (!b) return;
-  ITEM = b.dataset.item; MODEL = MODELS[ITEM];
+  const it = b.dataset.item;
+  if (SETTINGS.monthly.some(mi => mi.name === it)) MVIEW = it;
+  else { MVIEW = ""; ITEM = it; MODEL = MODELS[ITEM]; }
   $("itemChips").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
   render();
   if (!$("adminPanel").hidden && adminSec === "reports") showSection("reports");
@@ -665,17 +664,21 @@ function render() {
 
   const sym = { ok: "✓", miss: "✗", late: "遲", cov: "抵", free: "免", now: "…", na: "·", nodata: "?" };
   const tip = { ok: "已回報", miss: "缺交", late: "遲交", cov: "用免死次數抵掉", free: `${S.exName}免除`, now: "計算中", na: "不計算", nodata: "沒有資料" };
-  $("grid").innerHTML = `<tr><th class="name">成員</th>${days.map(d => `<th>${+d.slice(8)}<br><small>${wkOf(d)}</small></th>`).join("")}</tr>` +
-    ROWS.map(({ m, g }) => `<tr><td class="name">${esc(m.name)}</td>${g.cells.map(c =>
-      `<td><i class="c ${c.st}" title="${md(c.d)} ${tip[c.st]}${c.was === "late" ? "（遲交）" : ""}">${sym[c.st]}</i></td>`).join("")}</tr>`).join("");
-
-  // 每月定課：這個月每個人做了沒
-  $("monthlyCard").hidden = !S.monthly.length;
-  if (S.monthly.length) {
-    $("monthlyHint").textContent = S.monthly.map(mi => `${mi.name}：每月 ${mi.day} 號晚上 12 點前打卡一次，沒做罰 ${mi.fine} 元（這期期限 ${md(monthlyDue(mi, ym))}）`).join("；");
-    $("monthlyTable").innerHTML = `<tr><th>成員</th>${S.monthly.map(mi => `<th class="num">${esc(mi.name)}</th>`).join("")}</tr>` +
-      ROWS.map(({ m, t }) => `<tr><td>${esc(m.name)}</td>${S.monthly.map(mi => { const st = t.monthly[mi.name];
-        return `<td class="num"><i class="c ${st}" title="${esc(MTIP[st])}">${MSYM[st]}</i></td>`; }).join("")}</tr>`).join("");
+  const mi = MVIEW && S.monthly.find(x => x.name === MVIEW);
+  if (mi) {
+    // 每月定課：每個人一列、每個月一欄
+    const months = MODEL.months;
+    $("grid").innerHTML = `<tr><th class="name">成員</th>${months.map(y => `<th>${+y.slice(5)} 月<br><small>${md(monthlyDue(mi, y))}前</small></th>`).join("")}</tr>` +
+      ROWS.map(({ m }) => `<tr><td class="name">${esc(m.name)}</td>${months.map(y => { const st = monthlyStatus(m, mi, y);
+        return `<td><i class="c ${st}" title="${+y.slice(5)} 月 ${MTIP[st]}">${MSYM[st]}</i></td>`; }).join("")}</tr>`).join("");
+    $("legend").innerHTML = `<span>${esc(mi.name)}：每月 ${mi.day} 號晚上 12 點前打卡一次</span>` +
+      [["ok", "✓", "已完成"], ["miss", "✗", `沒做（罰 ${mi.fine} 元）`], ["now", "…", "還沒到期限"], ["na", "·", "不計算"]]
+        .map(([c, s, t]) => `<span><i class="c ${c}">${s}</i>${t}</span>`).join("");
+  } else {
+    $("grid").innerHTML = `<tr><th class="name">成員</th>${days.map(d => `<th>${+d.slice(8)}<br><small>${wkOf(d)}</small></th>`).join("")}</tr>` +
+      ROWS.map(({ m, g }) => `<tr><td class="name">${esc(m.name)}</td>${g.cells.map(c =>
+        `<td><i class="c ${c.st}" title="${md(c.d)} ${tip[c.st]}${c.was === "late" ? "（遲交）" : ""}">${sym[c.st]}</i></td>`).join("")}</tr>`).join("");
+    if (LEGEND) $("legend").innerHTML = LEGEND;
   }
 }
 
