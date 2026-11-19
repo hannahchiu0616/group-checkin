@@ -65,6 +65,9 @@ td.zero{color:var(--ok);font-weight:700}
 .c.now{background:var(--none-bg);color:var(--accent);outline:1px dashed var(--accent);outline-offset:-1px}
 .c.nodata{background:var(--none-bg);color:var(--muted)}
 /* 每月定課的紀錄表：窄一點、每格寫字 */
+.paid{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer}
+.paid input{width:18px;height:18px;margin:0}
+.paid-ok{color:var(--ok);font-weight:600}
 .grid.mview{width:auto}
 .grid.mview th,.grid.mview td{padding:7px 12px;border-bottom:1px solid var(--line)}
 .grid.mview th.name,.grid.mview td.name{padding-right:28px}
@@ -261,7 +264,8 @@ button.sm{padding:4px 9px;font-size:.85rem}
   <section class="panel" data-panel="summary" hidden>
   <div class="stats" id="stats"></div>
   <div class="card" style="margin-top:16px">
-    <h2>本月結算</h2>
+    <h2 id="sumTitle">本月結算</h2>
+    <p class="hint" id="sumHint" style="margin:-6px 0 8px">要看以前的月份，改最上面的「月份」。</p>
     <p class="hint month-note" hidden></p>
     <div class="scroll tall"><table id="summaryTable"></table></div>
   </div>
@@ -657,18 +661,30 @@ function render() {
   ].map(([k, v, money]) => `<div class="stat"><div class="k">${k}</div><div class="v ${money ? "money" : ""}">${v}</div></div>`).join("");
 
   const free = S.freePerMonth;
+  $("sumTitle").textContent = `${ym.replace("-", " 年 ").replace(/ 0/, " ")} 月結算`;
+  // 繳交欄：管理員登入後可以勾已繳；其他人只看結果
+  const paid = {};
+  for (const r of DATA["繳費"] || []) paid[r[0] + "|" + r[1]] = normDate(r[2]) || r[2] || "已繳";
+  const canPay = !!TOKEN && !OWNER_MODE;
+  $("sumHint").textContent = "要看以前的月份，改最上面的「月份」。" + (canPay ? "勾「繳交」欄就會記錄已繳。" : "管理員登入後可以在「繳交」欄記錄已繳。");
+  const payCell = (m, t) => {
+    const p = paid[m.name + "|" + ym], when = p && /^\d{4}-/.test(p) ? ` ${md(p)}` : "";
+    if (!t.owe && !p) return `<td class="num zero">—</td>`;
+    if (canPay) return `<td class="num"><label class="paid"><input type="checkbox" data-paid="${esc(m.name)}" ${p ? "checked" : ""}> ${p ? `已繳${when}` : "未繳"}</label></td>`;
+    return `<td class="num ${p ? "paid-ok" : "money"}">${p ? `✓ 已繳${when}` : "未繳"}</td>`;
+  };
   if (multi) {
     // 好幾個項目：每項一欄「沒做」次數（缺交＋遲交），最後是全部項目加起來的金額
-    $("summaryTable").innerHTML = `<tr><th>成員</th>${S.items.map(it => `<th class="num">${esc(it)}沒做</th>`).join("")}${S.monthly.map(mi => `<th class="num">${esc(mi.name)}</th>`).join("")}${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}天數</th>` : ""}<th class="num">本月${esc(S.fineName)}</th></tr>` +
+    $("summaryTable").innerHTML = `<tr><th>成員</th>${S.items.map(it => `<th class="num">${esc(it)}沒做</th>`).join("")}${S.monthly.map(mi => `<th class="num">${esc(mi.name)}</th>`).join("")}${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}天數</th>` : ""}<th class="num">本月${esc(S.fineName)}</th><th class="num">繳交</th></tr>` +
       ROWS.map(({ m, t }) => `<tr><td>${esc(m.name)}</td>${S.items.map(it => `<td class="num">${t.per[it].missAll + t.per[it].lateAll}</td>`).join("")}${S.monthly.map(mi => `<td class="num"><i class="c ${t.monthly[mi.name]}" title="${esc(MTIP[t.monthly[mi.name]])}">${MSYM[t.monthly[mi.name]]}</i></td>`).join("")}
       ${free ? `<td class="num">${t.cov} / ${t.limit}</td>` : ""}${S.exName ? `<td class="num">${t.free}</td>` : ""}
-      <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}${t.manual ? "（手算）" : ""}</td></tr>`).join("");
+      <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}${t.manual ? "（手算）" : ""}</td>${payCell(m, t)}</tr>`).join("");
   } else
-  $("summaryTable").innerHTML = `<tr><th>成員</th><th class="num">已回報</th><th class="num">缺交</th><th class="num">遲交</th>${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}</th>` : ""}<th class="num">本月${esc(S.fineName)}</th></tr>` +
+  $("summaryTable").innerHTML = `<tr><th>成員</th><th class="num">已回報</th><th class="num">缺交</th><th class="num">遲交</th>${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}</th>` : ""}<th class="num">本月${esc(S.fineName)}</th><th class="num">繳交</th></tr>` +
     ROWS.map(({ m, t }) => {
       return `<tr><td>${esc(m.name)}</td><td class="num">${t.ok}</td><td class="num">${t.missAll}</td><td class="num">${t.lateAll}</td>
       ${free ? `<td class="num">${t.limit ? `${t.cov} / ${t.limit}` : "—"}</td>` : ""}${S.exName ? `<td class="num">${t.free}</td>` : ""}
-      <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}</td></tr>`;
+      <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}</td>${payCell(m, t)}</tr>`;
     }).join("");
 
   const sym = { ok: "✓", miss: "✗", late: "遲", cov: "抵", free: "免", now: "…", na: "·", nodata: "?" };
@@ -933,7 +949,22 @@ function showLoginState() {
   $("loginCard").hidden = inn;
   if (OWNER_MODE) $("ownerPanel").hidden = !inn; else $("adminPanel").hidden = !inn;
   if (inn) onLogin();
+  if (MODEL && !OWNER_MODE) render();   // 本月結算的「繳交」欄：登入後可以勾、登出後只能看
 }
+// 本月結算：管理員勾／取消「已繳」
+$("summaryTable").onchange = async e => {
+  const cb = e.target.closest("[data-paid]");
+  if (!cb) return;
+  const name = cb.dataset.paid, month = $("month").value, paid = cb.checked;
+  cb.disabled = true;
+  try {
+    await api({ action: "setPaid", name, month, paid });
+    await load();
+  } catch (err) {
+    alert(`沒有存到：${err.message}`);
+    cb.checked = !paid; cb.disabled = false;
+  }
+};
 // Email 在管理員名單上就直接登入
 $("loginBtn").onclick = async () => {
   const email = $("loginEmail").value.trim();

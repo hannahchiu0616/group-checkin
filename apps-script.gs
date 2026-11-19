@@ -14,8 +14,9 @@ const TABS = {
   "管理員": ["Email"],
   "修改紀錄": ["時間", "Email", "動作", "內容"],
   "回報封存": ["時間戳記", "姓名", "日期", "狀態", "項目"],   // 超過保留月數的舊回報搬來這裡（網站不讀）
+  "繳費": ["名字", "月份", "繳交日期", "記錄的管理員"],   // 本月結算的「繳交」欄：管理員勾已繳
 };
-const PUBLIC_TABS = ["成員", "回報", "免除", "退出休息", "手算調整"];   // 大家都看得到（管理員、修改紀錄不公開）
+const PUBLIC_TABS = ["成員", "回報", "免除", "退出休息", "手算調整", "繳費"];   // 大家都看得到（管理員、修改紀錄不公開）
 const EDIT_TABS = ["成員", "免除", "退出休息", "手算調整", "管理員"];   // 管理頁可以整份修改的分頁
 const SETTING_KEYS = ["名稱", "副標題", "任務名稱", "罰款名稱", "開始計算日", "每次罰款", "每月免死次數", "免死從",
   "切換時間", "免除名稱", "免除提前天數", "保留月數", "規則說明", "每月定課"];   // 每月定課：一行一項「名稱|每月幾號前|罰款」
@@ -279,6 +280,17 @@ const ACTIONS = {
     append(ss, "回報", [[now(), name, date, "補登", item]]);
     ensureMember(ss, name, date);
     log(ss, email, "補登回報", `${name} ${date}${item ? " " + item : ""}`);
+    return {};
+  },
+  // 本月結算：管理員勾「已繳」／取消
+  setPaid(p) {
+    const { ss, email } = auth(p);
+    const name = cleanName(p.name), month = String(p.month || "");
+    if (!name || !/^\d{4}-\d{2}$/.test(month)) throw new Error("名字或月份不完整");
+    const keep = rows(ss, "繳費").filter(r => !(r[0] === name && r[1] === month));
+    if (p.paid) keep.push([name, month, today(), email]);
+    setRows(ss, "繳費", keep);
+    log(ss, email, p.paid ? "記錄已繳" : "取消已繳", `${name} ${month}`);
     return {};
   },
 
