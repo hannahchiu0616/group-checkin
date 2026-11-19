@@ -712,7 +712,7 @@ function render() {
   };
   if (multi) {
     // 好幾個項目：每項一欄「沒做」次數（缺交＋遲交），最後是全部項目加起來的金額
-    $("summaryTable").innerHTML = `<tr><th>成員</th>${S.items.map(it => `<th class="num">${esc(it)}沒做</th>`).join("")}${S.monthly.map(mi => `<th class="num">${esc(mi.name)}</th>`).join("")}${free ? `<th class="num">已用免死次數</th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}天數</th>` : ""}<th class="num">本月${esc(S.fineName)}</th><th class="num">繳交</th></tr>` +
+    $("summaryTable").innerHTML = `<tr><th>成員</th>${S.items.map(it => `<th class="num">${esc(it)}沒做</th>`).join("")}${S.monthly.map(mi => `<th class="num">${esc(mi.name)}</th>`).join("")}${free ? `<th class="num" title="每項定課各自的免死次數加起來">已用免死次數<br><small>（各項合計）</small></th>` : ""}${S.exName ? `<th class="num">${esc(S.exName)}天數</th>` : ""}<th class="num">本月${esc(S.fineName)}</th><th class="num">繳交</th></tr>` +
       ROWS.map(({ m, t }) => `<tr><td>${esc(m.name)}</td>${S.items.map(it => `<td class="num">${t.per[it].missAll + t.per[it].lateAll}</td>`).join("")}${S.monthly.map(mi => `<td class="num"><i class="c ${t.monthly[mi.name]}" title="${esc(MTIP[t.monthly[mi.name]])}">${MSYM[t.monthly[mi.name]]}</i></td>`).join("")}
       ${free ? `<td class="num">${t.cov} / ${t.limit}</td>` : ""}${S.exName ? `<td class="num">${t.free}</td>` : ""}
       <td class="num ${t.owe ? "money" : "zero"}">$${t.owe}${t.manual ? "（手算）" : ""}</td>${payCell(m, t)}</tr>`).join("");
@@ -1149,8 +1149,8 @@ function secSettings() {
     ["計算規則", [
       ["開始計算日", "開始計算日", "date", "這天以前只顯示回報，不計罰款"],
       ["切換時間", "每天的切換時間", "time", "例如中午 12:00：中午前回報算前一天"],
-      ["每次罰款", "每次缺交罰多少元", "number", "好幾個項目時是每項各罰這個金額"],
-      ["每月免死次數", "每人每月免死次數", "number", "0＝沒有免死"],
+      ["每次罰款", "每次缺交罰多少元（每項分開算）", "number", "每天的定課每一項沒做各罰這個金額，例如 100：打拳沒做罰 100、觀心書沒做也罰 100"],
+      ["每月免死次數", "每項定課每人每月免死次數", "number", "每天的定課每一項各自有這麼多次，不是加起來。例如 8：打拳 8 次、觀心書 8 次，共 16 次。每月定課（例如痛的參解）不能用免死抵。0＝沒有免死"],
       ["免死從", "免死次數從哪個月開始", "month", "空白＝一開始就有"],
     ]],
     ["免回報方式", [
